@@ -84,15 +84,36 @@ export function CompareGrid({
           Closed ({closedLanes.length}):
         </span>
         {closedLanes.map((l) => (
-          <button
+          <span
             key={l.id}
-            onClick={() => onReopenLane(l.id)}
-            title={`Reopen ${l.model}`}
-            className="inline-flex max-w-[180px] items-center gap-1 truncate rounded-full border border-gray-300 bg-white px-2 py-0.5 text-xs text-gray-600 transition hover:border-brand hover:text-brand dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300"
+            className="inline-flex max-w-[210px] items-center rounded-full border border-gray-300 bg-white text-xs text-gray-600 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300"
           >
-            ↩ {bestLaneId === l.id && "⭐ "}
-            {l.model}
-          </button>
+            <button
+              onClick={() => onReopenLane(l.id)}
+              title={`Reopen ${l.model}`}
+              className="inline-flex max-w-[170px] items-center gap-1 truncate rounded-l-full py-0.5 pl-2 pr-1 transition hover:text-brand"
+            >
+              ↩ {bestLaneId === l.id && "⭐ "}
+              {l.model}
+            </button>
+            <button
+              onClick={() => {
+                if (
+                  confirm(
+                    `Permanently close the "${l.model}" lane?\n\n` +
+                      "This removes the lane and all of its responses in this chat. " +
+                      "This cannot be undone."
+                  )
+                )
+                  onRemove(l.id);
+              }}
+              title={`Permanently close ${l.model}`}
+              aria-label={`Permanently close ${l.model}`}
+              className="rounded-r-full border-l border-gray-200 py-0.5 pl-1.5 pr-2 text-gray-400 transition hover:text-red-600 dark:border-gray-700 dark:hover:text-red-400"
+            >
+              ✕
+            </button>
+          </span>
         ))}
       </div>
     ) : null;

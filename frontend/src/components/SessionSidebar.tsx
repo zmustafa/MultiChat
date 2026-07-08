@@ -161,50 +161,61 @@ export function SessionSidebar({
           </button>
           {settingsOpen && (
             <div className="ml-2 mt-0.5 space-y-0.5 border-l border-gray-200 pl-2 dark:border-gray-700">
-              <div className="px-2 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
-                Configuration
-              </div>
               <Link
                 to="/settings"
-                className="block rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800"
+                className="flex items-center gap-2 rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800"
               >
-                🔌 AI Providers
+                <span className="w-4 shrink-0 text-center">🔌</span>
+                AI Providers
               </Link>
               <Link
                 to="/personas"
-                className="block rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800"
+                className="flex items-center gap-2 rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800"
               >
-                🎭 Personas
+                <span className="w-4 shrink-0 text-center">🎭</span>
+                Personas
               </Link>
               <Link
                 to="/snippets"
-                className="block rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800"
+                className="flex items-center gap-2 rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800"
               >
-                ⚡ Snippets
+                <span className="w-4 shrink-0 text-center">⚡</span>
+                Snippets
               </Link>
               <Link
                 to="/analytics"
-                className="block rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800"
+                className="flex items-center gap-2 rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800"
               >
-                📊 Usage analytics
+                <span className="w-4 shrink-0 text-center">📊</span>
+                Usage analytics
               </Link>
               <Link
                 to="/evals"
-                className="block rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800"
+                className="flex items-center gap-2 rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800"
               >
-                🧪 Evaluations
+                <span className="w-4 shrink-0 text-center">🧪</span>
+                Evaluations
               </Link>
               <Link
                 to="/integrations"
-                className="block rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800"
+                className="flex items-center gap-2 rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800"
               >
-                🔗 Integrations
+                <span className="w-4 shrink-0 text-center">🔗</span>
+                Integrations
               </Link>
               <Link
                 to="/settings/general"
-                className="block rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800"
+                className="flex items-center gap-2 rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800"
               >
-                🛠 General
+                <span className="w-4 shrink-0 text-center">🛠</span>
+                General
+              </Link>
+              <Link
+                to="/settings/security"
+                className="flex items-center gap-2 rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800"
+              >
+                <span className="w-4 shrink-0 text-center">🔒</span>
+                Security
               </Link>
             </div>
           )}

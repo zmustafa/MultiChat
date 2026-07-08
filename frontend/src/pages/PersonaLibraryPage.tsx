@@ -10,10 +10,12 @@ import {
 import { useProviders } from "../hooks/useProviders";
 import { useSessionMutations } from "../hooks/useSessions";
 import { seedLaneCollapse } from "../utils/laneCollapse";
+import { resolvePersonaLanes } from "../utils/personaLanes";
 import { ModelPicker } from "../components/ModelPicker";
 import { ThemeToggle } from "../components/ThemeToggle";
 
 function providerName(providers: Provider[], id: string): string {
+  if (!id) return "auto"; // portable starter lane — bound to a provider at launch
   return providers.find((p) => p.id === id)?.name || "unknown";
 }
 
@@ -297,11 +299,12 @@ export function PersonaLibraryPage() {
   }, [personas, query]);
 
   async function startTopic(p: Persona) {
+    const lanes = resolvePersonaLanes(p, providers);
     const created = await sm.create.mutateAsync({
       title: p.name,
       system_prompt: p.system_prompt || undefined,
       tools_enabled: p.tools_enabled,
-      lanes: p.lanes.map((l) => ({
+      lanes: lanes.map((l) => ({
         provider_id: l.provider_id,
         model: l.model,
         role: l.role,
@@ -309,7 +312,7 @@ export function PersonaLibraryPage() {
     });
     seedLaneCollapse(
       created.lanes.map((l) => l.id),
-      p.lanes.map((l) => !!l.collapsed)
+      lanes.map((l) => l.collapsed)
     );
     nav(`/c/${created.id}`);
   }

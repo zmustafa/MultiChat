@@ -24,6 +24,7 @@ import { usePersonas, usePersonaMutations } from "../hooks/usePersonas";
 import { useProviders } from "../hooks/useProviders";
 import { useTheme } from "../hooks/useTheme";
 import { seedLaneCollapse } from "../utils/laneCollapse";
+import { resolvePersonaLanes } from "../utils/personaLanes";
 import {
   useActiveSessions,
   useSession,
@@ -604,11 +605,12 @@ export function ComparePage() {
 
   async function newTopic(persona?: Persona) {
     if (persona) {
+      const lanes = resolvePersonaLanes(persona, providers);
       const created = await sm.create.mutateAsync({
         title: persona.name,
         system_prompt: persona.system_prompt || undefined,
         tools_enabled: persona.tools_enabled,
-        lanes: persona.lanes.map((l) => ({
+        lanes: lanes.map((l) => ({
           provider_id: l.provider_id,
           model: l.model,
           role: l.role,
@@ -616,7 +618,7 @@ export function ComparePage() {
       });
       seedLaneCollapse(
         created.lanes.map((l) => l.id),
-        persona.lanes.map((l) => !!l.collapsed)
+        lanes.map((l) => l.collapsed)
       );
       setActiveId(created.id);
       return;

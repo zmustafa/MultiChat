@@ -73,6 +73,18 @@ def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
 
+# The seeded quick-start account. `is_default_credentials` lets the app warn the user while
+# they're still signed in with the public default password.
+DEFAULT_ADMIN_EMAIL = "admin"
+DEFAULT_ADMIN_PASSWORD = "admin"
+
+
+def is_default_credentials(user) -> bool:
+    return user.email == DEFAULT_ADMIN_EMAIL and verify_password(
+        DEFAULT_ADMIN_PASSWORD, user.password_hash
+    )
+
+
 def create_access_token(user_id: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(hours=settings.JWT_EXPIRE_HOURS)
     payload = {"sub": user_id, "exp": expire}

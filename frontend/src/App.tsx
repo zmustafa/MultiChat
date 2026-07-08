@@ -2,10 +2,12 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { useAuth } from "./auth/AuthContext";
 import { useProviders } from "./hooks/useProviders";
 import { AppLayout } from "./components/AppLayout";
+import { DefaultPasswordPrompt } from "./components/DefaultPasswordPrompt";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { ComparePage } from "./pages/ComparePage";
 import { EvalsPage } from "./pages/EvalsPage";
 import { GeneralSettingsPage } from "./pages/GeneralSettingsPage";
+import { SecuritySettingsPage } from "./pages/SecuritySettingsPage";
 import { IntegrationsPage } from "./pages/IntegrationsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { PersonaLibraryPage } from "./pages/PersonaLibraryPage";
@@ -45,7 +47,9 @@ function RequireProvider({ children }: { children: JSX.Element }) {
 export default function App() {
   const { user } = useAuth();
   return (
-    <Routes>
+    <>
+      <DefaultPasswordPrompt />
+      <Routes>
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
       <Route
         path="/"
@@ -77,6 +81,7 @@ export default function App() {
       >
         <Route index element={<SettingsPage />} />
         <Route path="general" element={<GeneralSettingsPage />} />
+        <Route path="security" element={<SecuritySettingsPage />} />
       </Route>
       <Route
         path="/personas"
@@ -130,5 +135,6 @@ export default function App() {
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </>
   );
 }

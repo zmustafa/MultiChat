@@ -945,19 +945,8 @@ export function LaneColumn({
                           </span>
                         )}
                       </div>
-                      {m.tool_calls.map((tc) => (
-                        <ToolCallCard
-                          key={tc.id}
-                          call={{
-                            tool_call_id: tc.id,
-                            tool: tc.tool_name,
-                            arguments: tc.arguments_json,
-                            status: tc.status,
-                            result: tc.result_json?.result,
-                            citations: tc.citations_json,
-                          }}
-                        />
-                      ))}
+                      {/* Tool calls are shown live while generating, then hidden once the
+                          response is complete so they don't clutter the persisted log. */}
                       {m.error ? (
                         <div className="text-xs text-red-500">Error: {m.error}</div>
                       ) : (

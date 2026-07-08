@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type { Persona } from "../api/types";
 import { usePersonas } from "../hooks/usePersonas";
+import { useProviders } from "../hooks/useProviders";
 import { useSessions, useSessionMutations, useActiveSessions } from "../hooks/useSessions";
 import { seedLaneCollapse } from "../utils/laneCollapse";
+import { resolvePersonaLanes } from "../utils/personaLanes";
 import { SessionSidebar } from "./SessionSidebar";
 
 /**
@@ -17,6 +19,7 @@ export function SidebarNav() {
   const activeId = sessionId ?? localStorage.getItem("multichat_active");
   const { data: sessions = [] } = useSessions();
   const { data: personas = [] } = usePersonas();
+  const { data: providers = [] } = useProviders();
   const { data: active } = useActiveSessions();
   const generatingIds = new Set(active?.session_ids ?? []);
   const sm = useSessionMutations();
@@ -29,11 +32,12 @@ export function SidebarNav() {
 
   async function newTopic(persona?: Persona) {
     if (persona) {
+      const lanes = resolvePersonaLanes(persona, providers);
       const created = await sm.create.mutateAsync({
         title: persona.name,
         system_prompt: persona.system_prompt || undefined,
         tools_enabled: persona.tools_enabled,
-        lanes: persona.lanes.map((l) => ({
+        lanes: lanes.map((l) => ({
           provider_id: l.provider_id,
           model: l.model,
           role: l.role,
@@ -41,7 +45,7 @@ export function SidebarNav() {
       });
       seedLaneCollapse(
         created.lanes.map((l) => l.id),
-        persona.lanes.map((l) => !!l.collapsed)
+        lanes.map((l) => l.collapsed)
       );
       nav(`/c/${created.id}`);
       return;

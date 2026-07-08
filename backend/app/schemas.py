@@ -19,6 +19,14 @@ class UserOut(BaseModel):
     id: str
     email: str
     created_at: datetime
+    # True while the account still uses the seeded default admin/admin credentials, so the
+    # UI can prompt the user to change the password.
+    is_default_password: bool = False
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 
 class AuthResponse(BaseModel):

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { apiFetch, streamSSE } from "../api/client";
 import type {
   AuthMethod,
@@ -50,6 +51,7 @@ export const empty: FormState = {
 };
 
 function OAuthConnect({ provider }: { provider: Provider }) {
+  const qc = useQueryClient();
   const [status, setStatus] = useState<string>("");
   const [mode, setMode] = useState<string>("");
   const [flavor, setFlavor] = useState<string>("");
@@ -62,17 +64,33 @@ function OAuthConnect({ provider }: { provider: Provider }) {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollFnRef = useRef<() => void>(() => {});
   const pollingRef = useRef(false);
+  const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const intervalMsRef = useRef(5000);
 
-  const startPolling = (intervalMs: number) => {
+  // Begin the polling interval (idempotent). Polls once immediately, then on a timer.
+  const runInterval = () => {
+    if (pollRef.current) return;
+    pollFnRef.current();
+    pollRef.current = setInterval(() => pollFnRef.current(), intervalMsRef.current);
+  };
+  // Arm polling but don't hit the backend right away. We wait for the tab to regain focus
+  // (the focus handler starts the interval) — i.e. when the user returns from the OAuth
+  // browser tab. A delayed fallback starts polling anyway if no focus event arrives.
+  const armPolling = (intervalMs: number) => {
+    intervalMsRef.current = intervalMs;
     pollingRef.current = true;
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(() => pollFnRef.current(), intervalMs);
+    if (armTimerRef.current) clearTimeout(armTimerRef.current);
+    armTimerRef.current = setTimeout(runInterval, 10000);
   };
   const stopPolling = () => {
     pollingRef.current = false;
     if (pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
+    }
+    if (armTimerRef.current) {
+      clearTimeout(armTimerRef.current);
+      armTimerRef.current = null;
     }
   };
 
@@ -86,8 +104,9 @@ function OAuthConnect({ provider }: { provider: Provider }) {
     if (provider.oauth_connected || !provider.oauth_pending || pollingRef.current) return;
     setMode("device");
     setStatus("Finishing sign-in… waiting for GitHub. Keep this tab open.");
-    pollFnRef.current();
-    startPolling(5000);
+    armPolling(5000);
+    // The user just reloaded and is looking at this tab, so start polling right away.
+    if (document.hasFocus()) runInterval();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider.oauth_pending, provider.oauth_connected]);
 
@@ -97,12 +116,19 @@ function OAuthConnect({ provider }: { provider: Provider }) {
   useEffect(() => {
     const onFocus = () => {
       if (
-        pollingRef.current &&
-        !provider.oauth_connected &&
-        document.visibilityState !== "hidden"
-      ) {
-        pollFnRef.current();
+        !pollingRef.current ||
+        provider.oauth_connected ||
+        document.visibilityState === "hidden"
+      )
+        return;
+      // Focus regained (user returned from the OAuth tab): cancel the fallback timer,
+      // poll immediately to catch up, and make sure the interval is running.
+      if (armTimerRef.current) {
+        clearTimeout(armTimerRef.current);
+        armTimerRef.current = null;
       }
+      pollFnRef.current();
+      runInterval();
     };
     document.addEventListener("visibilitychange", onFocus);
     window.addEventListener("focus", onFocus);
@@ -129,10 +155,10 @@ function OAuthConnect({ provider }: { provider: Provider }) {
           verification_uri: res.verification_uri,
         });
         setStatus("Enter the code shown below in your browser, then wait…");
-        startPolling((res.interval || 5) * 1000);
+        armPolling((res.interval || 5) * 1000);
       } else if (res.mode === "loopback") {
         setStatus("A browser window opened — sign in and it will connect automatically.");
-        startPolling(3000);
+        armPolling(3000);
       } else {
         setStatus("Sign in via the opened browser tab, then paste the code below.");
       }
@@ -186,10 +212,24 @@ function OAuthConnect({ provider }: { provider: Provider }) {
 
   async function disconnect() {
     stopPolling();
-    await apiFetch<void>(`/api/providers/${provider.id}/oauth/disconnect`, {
-      method: "POST",
-    });
-    window.location.reload();
+    setBusy(true);
+    try {
+      await apiFetch<void>(`/api/providers/${provider.id}/oauth/disconnect`, {
+        method: "POST",
+      });
+      // Reset local sign-in state and refresh the providers list in place so the panel
+      // flips to "not connected" without a full-page reload (which steals focus).
+      setMode("");
+      setFlavor("");
+      setPasteCode("");
+      setDeviceInfo({});
+      setStatus("");
+      await qc.invalidateQueries({ queryKey: ["providers"] });
+    } catch (e) {
+      setStatus(`Error: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function finishConnected() {
@@ -199,7 +239,14 @@ function OAuthConnect({ provider }: { provider: Provider }) {
     } catch {
       /* non-fatal */
     }
-    window.location.reload();
+    // Refresh the providers list in place (no full-page reload) so the panel flips to
+    // "connected" while keeping the current provider selected and focused.
+    setMode("");
+    setFlavor("");
+    setPasteCode("");
+    setDeviceInfo({});
+    setStatus("Connected ✓");
+    await qc.invalidateQueries({ queryKey: ["providers"] });
   }
 
   const connecting = !!mode && !provider.oauth_connected;
@@ -225,10 +272,12 @@ function OAuthConnect({ provider }: { provider: Provider }) {
         </span>
         {provider.oauth_connected ? (
           <button
+            type="button"
             onClick={disconnect}
-            className="rounded bg-red-100 px-2 py-1 text-red-700 dark:bg-red-950 dark:text-red-300"
+            disabled={busy}
+            className="rounded bg-red-100 px-2 py-1 text-red-700 disabled:opacity-50 dark:bg-red-950 dark:text-red-300"
           >
-            Disconnect
+            {busy ? "Disconnecting…" : "Disconnect"}
           </button>
         ) : (
           <button

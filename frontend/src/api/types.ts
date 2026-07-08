@@ -2,6 +2,7 @@ export interface User {
   id: string;
   email: string;
   created_at: string;
+  is_default_password?: boolean;
 }
 
 export type ProviderType =

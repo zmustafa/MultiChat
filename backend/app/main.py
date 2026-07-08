@@ -53,6 +53,25 @@ def _seed_admin() -> None:
         db.close()
 
 
+def _seed_personas() -> None:
+    """Seed the curated starter personas for every user (idempotent, dedup by name), so a
+    fresh install ships with a useful persona library instead of an empty one."""
+    from sqlalchemy import select
+
+    from .models import User
+    from .seed_personas import seed_starter_personas
+
+    db = SessionLocal()
+    try:
+        for user in db.scalars(select(User)).all():
+            try:
+                seed_starter_personas(db, user)
+            except Exception:  # noqa: BLE001 — never let seeding break startup
+                db.rollback()
+    finally:
+        db.close()
+
+
 def _migrate() -> None:
     """Lightweight SQLite migration: add columns introduced after a DB was created.
 
@@ -150,6 +169,7 @@ def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
     _migrate()
     _seed_admin()
+    _seed_personas()
     _cleanup_generated()
     _reset_orphaned_lanes()
     _reconnect_integrations()
