@@ -8,6 +8,7 @@ every answer concurrently, then let a Judge lane synthesize the best one. Bring 
 providers (API key **or** OAuth), call tools, run evals, and track it all on an insights
 dashboard.
 
+[![CI](https://github.com/zmustafa/MultiChat/actions/workflows/ci.yml/badge.svg)](https://github.com/zmustafa/MultiChat/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](backend/requirements.txt)
 [![React 18](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](frontend/package.json)
@@ -265,15 +266,38 @@ The fan-out streaming engine is `backend/app/broadcast.py`; providers live under
 
 ## 🔐 Security notes
 
-- **Before exposing this app publicly:** set a strong random `JWT_SECRET`, generate a
-  unique `APP_ENCRYPTION_KEY`, and change the seeded **admin/admin** password — the
-  defaults are for local development only.
+MultiChat is designed to be **self-hosted and run by a trusted user (or small trusted
+team) against their own provider keys.** It is *not* hardened for hostile, multi-tenant,
+or public-internet exposure. Please keep that threat model in mind before deploying it
+somewhere untrusted users can reach.
+
+**What's protected**
+
 - **Secrets.** Provider API keys and tool secrets are **Fernet-encrypted at rest** and
   never returned in plaintext (masked + `has_key`). The browser never holds a key.
 - **Auth.** Passwords are bcrypt-hashed; access is JWT bearer (24h). Every data route is
-  auth-scoped to the owner (cross-user access → 404).
+  auth-scoped to the owner (cross-user access → 404). A weak/absent `JWT_SECRET` is
+  auto-replaced at startup with a generated one persisted outside the repo.
 - **Egress.** `fetch_url` / `web_search` block private/loopback/link-local addresses and
   cap response size.
+- **Imports.** Backup/restore rejects path-traversal (Zip-Slip) member names.
+
+**Before exposing it beyond localhost**
+
+- Set a strong random `JWT_SECRET`, generate a unique `APP_ENCRYPTION_KEY`, and change
+  the seeded **admin/admin** password — the defaults are for local development only.
+- Put it behind TLS and, ideally, your own auth proxy.
+
+**Known limitations (by design / not yet hardened)**
+
+- **Integrations run local processes.** Connecting an MCP integration (e.g. WorkIQ)
+  launches a local subprocess with the server's privileges — only connect servers you
+  trust. Treat an authenticated account as able to run code on the host.
+- **SSRF on redirects.** `fetch_url` validates the initial URL but follows redirects;
+  a hostile server could redirect toward internal addresses. Don't expose it to
+  untrusted users on a sensitive network.
+- **No login rate-limiting** and **unauthenticated capability URLs** for uploaded files
+  (long unguessable UUIDs). Fine for local/trusted use; harden before public exposure.
 
 Found a vulnerability? Please follow [SECURITY.md](SECURITY.md) — don't open a public issue.
 
@@ -293,6 +317,7 @@ See [`.env.example`](.env.example) for the full, commented list.
 
 | Doc | What's inside |
 | --- | --- |
+| [TECHNICAL_SPEC.md](docs/TECHNICAL_SPEC.md) | Architecture, SSE fan-out engine, data model, request flow |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Local dev, type-check/build, PR guidelines |
 | [SECURITY.md](SECURITY.md) | Vulnerability disclosure policy & hardening notes |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Community guidelines |
