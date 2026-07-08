@@ -27,6 +27,7 @@ export interface Provider {
   has_key: boolean;
   oauth_connected: boolean;
   oauth_expires_at: number | null;
+  oauth_pending?: boolean;
   models: string[];
   default_model: string | null;
   extra: Record<string, any>;

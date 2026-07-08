@@ -552,6 +552,22 @@ export function LaneColumn({
     [turns, lane.id],
   );
 
+  // When a (re)generation starts we snapshot the turn's currently-persisted answer. This
+  // lets us tell, once the lane finishes, whether the refetched message already reflects
+  // the NEW answer — so we can keep showing the freshly streamed text until it does,
+  // instead of briefly flashing the STALE old answer during the ~250ms refetch window.
+  const regenBaselineRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    const t = live?.turnId;
+    if (!t) return;
+    if (
+      (live.status === "streaming" || live.status === "queued") &&
+      (live.content ?? "") === ""
+    ) {
+      regenBaselineRef.current.set(t, byTurn.get(t)?.content ?? "");
+    }
+  }, [live?.turnId, live?.status, byTurn]);
+
   // Whether this lane has any fenced code blocks — gates the "collapse/expand all code" btn.
   const hasCode = useMemo(
     () =>
@@ -802,11 +818,28 @@ export function LaneColumn({
               // streamed text (appended file links, a final tools-disabled completion,
               // trailing whitespace), which used to leave the live overlay covering the
               // real answer — no footer — until a full page refresh cleared it.
+              //
+              // On DONE, however, keep showing the freshly streamed text until the
+              // persisted message actually reflects the NEW answer. Otherwise the lane
+              // briefly flashes the OLD answer (and remounts the renderer) during the
+              // ~250ms session-refetch window after a single-lane regenerate. "Reflects
+              // the new answer" = the persisted content equals the streamed text, or it
+              // has changed from the snapshot taken when this (re)generation started.
+              const liveContent = live?.content ?? "";
+              const persistedReflectsNew =
+                !!m &&
+                (m.content === liveContent ||
+                  m.content !== (regenBaselineRef.current.get(turn.id) ?? m.content));
               const liveHere =
                 live &&
                 live.turnId === turn.id &&
                 live.status !== "error" &&
-                !(m && (live.status === "done" || m.content === live.content))
+                !(
+                  m &&
+                  (live.status === "done"
+                    ? persistedReflectsNew
+                    : m.content === live.content)
+                )
                   ? live
                   : null;
               return (

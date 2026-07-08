@@ -75,6 +75,7 @@ class ProviderOut(BaseModel):
     has_key: bool
     oauth_connected: bool
     oauth_expires_at: int | None
+    oauth_pending: bool = False
     models: list[str]
     default_model: str | None
     extra: dict[str, Any]

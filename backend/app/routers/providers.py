@@ -36,9 +36,14 @@ def _serialize(p: Provider) -> ProviderOut:
         has_key=bool(p.api_key_encrypted),
         oauth_connected=oauth.oauth_connected(p),
         oauth_expires_at=p.oauth_expires_at,
+        oauth_pending=oauth.device_flow_pending(p),
         models=list(p.models_json or []),
         default_model=p.default_model,
-        extra=dict(p.extra_json or {}),
+        # Hide internal, underscore-prefixed state (e.g. the in-flight `_device_flow`
+        # device code) from the API response — it must never reach the browser.
+        extra={
+            k: v for k, v in (p.extra_json or {}).items() if not k.startswith("_")
+        },
         is_default=p.is_default,
         created_at=p.created_at,
     )
@@ -238,7 +243,7 @@ async def oauth_start(
 ) -> OAuthStartOut:
     p = _get_owned(db, user, provider_id)
     try:
-        result = await oauth.start_flow(p)
+        result = await oauth.start_flow(p, db)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc))
     return OAuthStartOut(**result)

@@ -60,10 +60,57 @@ function OAuthConnect({ provider }: { provider: Provider }) {
     verification_uri?: string;
   }>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollFnRef = useRef<() => void>(() => {});
+  const pollingRef = useRef(false);
 
-  useEffect(() => () => {
+  const startPolling = (intervalMs: number) => {
+    pollingRef.current = true;
     if (pollRef.current) clearInterval(pollRef.current);
-  }, []);
+    pollRef.current = setInterval(() => pollFnRef.current(), intervalMs);
+  };
+  const stopPolling = () => {
+    pollingRef.current = false;
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  };
+
+  // Clear the interval when the component unmounts (e.g. switching providers).
+  useEffect(() => () => stopPolling(), []);
+
+  // Resume an in-flight device sign-in after a page reload or component remount: the
+  // backend still has the pending flow, so keep polling until it's authorized instead of
+  // stalling at "not connected" forever.
+  useEffect(() => {
+    if (provider.oauth_connected || !provider.oauth_pending || pollingRef.current) return;
+    setMode("device");
+    setStatus("Finishing sign-in… waiting for GitHub. Keep this tab open.");
+    pollFnRef.current();
+    startPolling(5000);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider.oauth_pending, provider.oauth_connected]);
+
+  // Poll immediately when the user returns to this tab (e.g. right after authorizing on
+  // github.com/login/device). Background tabs throttle timers to ~once/minute, so without
+  // this the "connected" state can take up to a minute to be noticed after authorizing.
+  useEffect(() => {
+    const onFocus = () => {
+      if (
+        pollingRef.current &&
+        !provider.oauth_connected &&
+        document.visibilityState !== "hidden"
+      ) {
+        pollFnRef.current();
+      }
+    };
+    document.addEventListener("visibilitychange", onFocus);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", onFocus);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [provider.oauth_connected]);
 
   async function start() {
     setBusy(true);
@@ -82,10 +129,10 @@ function OAuthConnect({ provider }: { provider: Provider }) {
           verification_uri: res.verification_uri,
         });
         setStatus("Enter the code shown below in your browser, then wait…");
-        pollRef.current = setInterval(poll, (res.interval || 5) * 1000);
+        startPolling((res.interval || 5) * 1000);
       } else if (res.mode === "loopback") {
         setStatus("A browser window opened — sign in and it will connect automatically.");
-        pollRef.current = setInterval(poll, 3000);
+        startPolling(3000);
       } else {
         setStatus("Sign in via the opened browser tab, then paste the code below.");
       }
@@ -103,15 +150,19 @@ function OAuthConnect({ provider }: { provider: Provider }) {
         { method: "POST" }
       );
       if (res.status === "authorized") {
-        if (pollRef.current) clearInterval(pollRef.current);
+        stopPolling();
         setStatus("Connected ✓");
         finishConnected();
       } else if (res.status === "error") {
-        if (pollRef.current) clearInterval(pollRef.current);
+        stopPolling();
         setStatus(`Error: ${res.detail}`);
       }
-    } catch {
-      /* keep polling */
+    } catch (e) {
+      // Stop if the provider was deleted (or the flow no longer exists) so we don't spam
+      // the backend with a poll that can never succeed. Transient network blips are ignored.
+      const msg = (e as Error).message || "";
+      if (/not found/i.test(msg) || /no pending flow/i.test(msg)) stopPolling();
+      /* otherwise keep polling */
     }
   }
 
@@ -134,7 +185,7 @@ function OAuthConnect({ provider }: { provider: Provider }) {
   }
 
   async function disconnect() {
-    if (pollRef.current) clearInterval(pollRef.current);
+    stopPolling();
     await apiFetch<void>(`/api/providers/${provider.id}/oauth/disconnect`, {
       method: "POST",
     });
@@ -157,6 +208,9 @@ function OAuthConnect({ provider }: { provider: Provider }) {
       ? "Paste the code from the Anthropic page (looks like code#state)"
       : "Didn't connect automatically? Paste the full callback URL here";
   const placeholder = flavor === "claude" ? "code#state" : "http://localhost:1455/auth/callback?code=…";
+
+  // Keep the ref pointing at the latest poll so the mount/focus effects call a fresh closure.
+  pollFnRef.current = poll;
 
   return (
     <div className="mt-2 rounded border border-gray-200 bg-gray-50 p-2 text-xs dark:border-gray-700 dark:bg-gray-800">
@@ -1002,7 +1056,7 @@ export function ProviderSettings() {
 
               {/* OAuth sign-in */}
               {!isNew && selectedProvider?.auth_method === "oauth" && (
-                <OAuthConnect provider={selectedProvider} />
+                <OAuthConnect key={selectedProvider.id} provider={selectedProvider} />
               )}
               {isNew && form.auth_method === "oauth" && (
                 <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-700 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-300">

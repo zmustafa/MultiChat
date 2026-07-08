@@ -75,6 +75,9 @@ class PendingFlow:
 
 
 _pending: dict[str, PendingFlow] = {}
+# provider_id -> {"next_at": float, "interval": int} — honors GitHub device-flow rate limits
+# (the `slow_down` response) so we never poll GitHub faster than it allows.
+_github_backoff: dict[str, dict] = {}
 # provider_id -> {"token": str, "expires_at": int, "last_used": int}  (Copilot short-lived)
 _short_lived: dict[str, dict[str, Any]] = {}
 # provider_id -> asyncio.Lock, so N concurrent lanes sharing one Copilot provider don't all
@@ -240,7 +243,7 @@ def _close_loopback(provider_id: str) -> None:
 # ----------------------------------------------------------------------------
 
 
-async def start_flow(provider: Provider) -> dict[str, Any]:
+async def start_flow(provider: Provider, db: DbSession) -> dict[str, Any]:
     flavor = (provider.extra_json or {}).get("oauth_flavor")
     if provider.provider_type == "github_copilot":
         flavor = "copilot"
@@ -250,18 +253,19 @@ async def start_flow(provider: Provider) -> dict[str, Any]:
         flavor = flavor or "claude"
 
     if flavor == "chatgpt":
-        return await _start_chatgpt(provider)
+        return await _start_chatgpt(provider, db)
     if flavor == "claude":
-        return _start_claude(provider)
+        return _start_claude(provider, db)
     if flavor == "copilot":
-        return await _start_copilot(provider)
+        return await _start_copilot(provider, db)
     raise ValueError(f"Unsupported oauth flavor: {flavor}")
 
 
-async def _start_chatgpt(provider: Provider) -> dict[str, Any]:
+async def _start_chatgpt(provider: Provider, db: DbSession) -> dict[str, Any]:
     verifier, challenge = _make_pkce()
     state = _b64url(secrets.token_bytes(16))
     _pending[provider.id] = PendingFlow(flavor="chatgpt", verifier=verifier, state=state)
+    _persist_pkce(provider, db, "chatgpt", verifier, state)
     await _start_loopback(provider.id, CHATGPT["port"])
     params = {
         "response_type": "code",
@@ -281,7 +285,7 @@ async def _start_chatgpt(provider: Provider) -> dict[str, Any]:
     }
 
 
-def _start_claude(provider: Provider) -> dict[str, Any]:
+def _start_claude(provider: Provider, db: DbSession) -> dict[str, Any]:
     verifier, challenge = _make_pkce()
     # Anthropic echoes `state` back as the callback fragment (code#state) and validates
     # it as a PKCE-format value (43-128 unreserved chars). A short random state is
@@ -289,6 +293,7 @@ def _start_claude(provider: Provider) -> dict[str, Any]:
     # matching the canonical Claude Code OAuth flow.
     state = verifier
     _pending[provider.id] = PendingFlow(flavor="claude", verifier=verifier, state=state)
+    _persist_pkce(provider, db, "claude", verifier, state)
     params = {
         "code": "true",
         "client_id": _client_id(provider, CLAUDE["client_id"]),
@@ -306,7 +311,7 @@ def _start_claude(provider: Provider) -> dict[str, Any]:
     }
 
 
-async def _start_copilot(provider: Provider) -> dict[str, Any]:
+async def _start_copilot(provider: Provider, db: DbSession) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             COPILOT["device_code"],
@@ -319,6 +324,21 @@ async def _start_copilot(provider: Provider) -> dict[str, Any]:
     flow = PendingFlow(flavor="copilot")
     flow.device_code = data["device_code"]
     _pending[provider.id] = flow
+    _github_backoff.pop(provider.id, None)
+    # Persist the device flow so polling can still complete if the backend restarts (or a
+    # different worker handles the poll) between starting sign-in and the user authorizing
+    # on github.com/login/device. Without this the in-memory _pending is lost on restart
+    # and polling returns "No pending flow" forever, even though the device was authorized.
+    expires_in = int(data.get("expires_in", 900))
+    extra = dict(provider.extra_json or {})
+    extra["_device_flow"] = {
+        "flavor": "copilot",
+        "device_code": data["device_code"],
+        "expires_at": int(time.time()) + expires_in,
+    }
+    provider.extra_json = extra
+    db.add(provider)
+    db.commit()
     return {
         "flavor": "copilot",
         "mode": "device",
@@ -329,6 +349,52 @@ async def _start_copilot(provider: Provider) -> dict[str, Any]:
     }
 
 
+def _clear_device_flow(provider: Provider, db: DbSession) -> None:
+    """Remove the persisted device-flow state once it's consumed or expired."""
+    if (provider.extra_json or {}).get("_device_flow") is None:
+        return
+    extra = dict(provider.extra_json or {})
+    extra.pop("_device_flow", None)
+    provider.extra_json = extra
+    db.add(provider)
+    db.commit()
+
+
+def device_flow_pending(provider: Provider) -> bool:
+    """Whether an unexpired device sign-in flow is in progress for this provider, so the
+    UI can resume polling after a reload / component remount instead of stalling."""
+    df = (provider.extra_json or {}).get("_device_flow")
+    return bool(df and df.get("device_code") and int(df.get("expires_at", 0)) > int(time.time()))
+
+
+def _persist_pkce(
+    provider: Provider, db: DbSession, flavor: str, verifier: str, state: str
+) -> None:
+    """Persist the PKCE verifier/state for the paste/loopback flows (Claude, ChatGPT) so a
+    backend restart between starting sign-in and pasting the code doesn't lose it and force
+    the user to start over. Stored under an underscore key so it's stripped from API output."""
+    extra = dict(provider.extra_json or {})
+    extra["_oauth_pkce"] = {
+        "flavor": flavor,
+        "verifier": verifier,
+        "state": state,
+        "expires_at": int(time.time()) + 900,
+    }
+    provider.extra_json = extra
+    db.add(provider)
+    db.commit()
+
+
+def _clear_pkce(provider: Provider, db: DbSession) -> None:
+    if (provider.extra_json or {}).get("_oauth_pkce") is None:
+        return
+    extra = dict(provider.extra_json or {})
+    extra.pop("_oauth_pkce", None)
+    provider.extra_json = extra
+    db.add(provider)
+    db.commit()
+
+
 def _client_id(provider: Provider, default: str) -> str:
     return (provider.extra_json or {}).get("client_id") or default
 
@@ -336,7 +402,19 @@ def _client_id(provider: Provider, default: str) -> str:
 async def poll_flow(provider: Provider, db: DbSession) -> dict[str, Any]:
     flow = _pending.get(provider.id)
     if not flow:
-        return {"status": "error", "detail": "No pending flow"}
+        # Recover a device flow whose in-memory state was lost to a backend restart (or is
+        # held by a different worker): rebuild it from the persisted device code so the
+        # user can still finish signing in without starting over.
+        persisted = (provider.extra_json or {}).get("_device_flow")
+        if persisted and persisted.get("device_code"):
+            if int(persisted.get("expires_at", 0)) <= int(time.time()):
+                _clear_device_flow(provider, db)
+                return {"status": "error", "detail": "Sign-in expired — start again."}
+            flow = PendingFlow(flavor=persisted.get("flavor", "copilot"))
+            flow.device_code = persisted["device_code"]
+            _pending[provider.id] = flow
+        else:
+            return {"status": "error", "detail": "No pending flow"}
     if flow.error:
         return {"status": "error", "detail": flow.error}
 
@@ -349,6 +427,7 @@ async def poll_flow(provider: Provider, db: DbSession) -> dict[str, Any]:
             await _exchange_chatgpt(provider, db, flow.captured_code)
             _close_loopback(provider.id)
             _pending.pop(provider.id, None)
+            _clear_pkce(provider, db)
             return {"status": "authorized", "detail": "Connected"}
         except Exception as exc:  # noqa: BLE001
             return {"status": "error", "detail": str(exc)}
@@ -358,6 +437,7 @@ async def poll_flow(provider: Provider, db: DbSession) -> dict[str, Any]:
             done = await _poll_copilot(provider, db, flow)
             if done:
                 _pending.pop(provider.id, None)
+                _clear_device_flow(provider, db)
                 return {"status": "authorized", "detail": "Connected"}
             return {"status": "pending", "detail": "Authorization pending"}
         except Exception as exc:  # noqa: BLE001
@@ -371,7 +451,18 @@ async def complete_flow(
 ) -> dict[str, Any]:
     flow = _pending.get(provider.id)
     if not flow:
-        return {"status": "error", "detail": "No pending flow — start sign-in again."}
+        # Recover the PKCE verifier/state after a backend restart so the user can still
+        # finish a paste-based sign-in (Claude / ChatGPT) without starting over.
+        pkce = (provider.extra_json or {}).get("_oauth_pkce")
+        if pkce and pkce.get("verifier") and int(pkce.get("expires_at", 0)) > int(time.time()):
+            flow = PendingFlow(
+                flavor=pkce.get("flavor", ""),
+                verifier=pkce["verifier"],
+                state=pkce.get("state", ""),
+            )
+            _pending[provider.id] = flow
+        else:
+            return {"status": "error", "detail": "No pending flow — start sign-in again."}
 
     code = (code or "").strip()
     # Accept a full pasted callback URL (ChatGPT loopback fallback): extract code+state.
@@ -397,6 +488,7 @@ async def complete_flow(
         else:
             return {"status": "error", "detail": "Unsupported flavor for complete"}
         _pending.pop(provider.id, None)
+        _clear_pkce(provider, db)
         return {"status": "authorized", "detail": "Connected"}
     except Exception as exc:  # noqa: BLE001
         return {"status": "error", "detail": str(exc)}
@@ -485,6 +577,16 @@ async def _poll_copilot(
     provider: Provider, db: DbSession, flow: PendingFlow
 ) -> bool:
     client_id = _client_id(provider, COPILOT["client_id"])
+    # Respect GitHub's device-flow rate limit. The client polls on a fixed cadence, but
+    # GitHub requires honoring the `interval` it returns and escalates to `slow_down`
+    # (demanding a much longer interval, e.g. 80–90s) if polled too fast. If we ignore it,
+    # GitHub keeps returning `slow_down` and NEVER hands back the token — the sign-in hangs
+    # forever even after the user authorized. So we gate the actual GitHub call behind a
+    # per-provider backoff and never hit GitHub more often than it allows.
+    now = time.time()
+    bo = _github_backoff.get(provider.id)
+    if bo and now < bo["next_at"]:
+        return False
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             COPILOT["access_token"],
@@ -496,8 +598,14 @@ async def _poll_copilot(
             },
         )
         data = resp.json()
-    if data.get("error") in ("authorization_pending", "slow_down"):
+    err = data.get("error")
+    if err in ("authorization_pending", "slow_down"):
+        prev = bo["interval"] if bo else 5
+        # On slow_down GitHub bumps the required interval; honor it (with a small buffer).
+        interval = int(data.get("interval") or (prev + 5 if err == "slow_down" else 5))
+        _github_backoff[provider.id] = {"next_at": now + interval, "interval": interval}
         return False
+    _github_backoff.pop(provider.id, None)
     if "access_token" not in data:
         raise RuntimeError(data.get("error_description") or data.get("error") or "failed")
 
