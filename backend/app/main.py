@@ -72,6 +72,25 @@ def _seed_personas() -> None:
         db.close()
 
 
+def _seed_snippets() -> None:
+    """Seed the curated starter snippets for every user (idempotent, dedup by title), so a
+    fresh install ships with a few reusable prompt snippets instead of an empty library."""
+    from sqlalchemy import select
+
+    from .models import User
+    from .seed_snippets import seed_starter_snippets
+
+    db = SessionLocal()
+    try:
+        for user in db.scalars(select(User)).all():
+            try:
+                seed_starter_snippets(db, user)
+            except Exception:  # noqa: BLE001 — never let seeding break startup
+                db.rollback()
+    finally:
+        db.close()
+
+
 def _migrate() -> None:
     """Lightweight SQLite migration: add columns introduced after a DB was created.
 
@@ -170,6 +189,7 @@ def on_startup() -> None:
     _migrate()
     _seed_admin()
     _seed_personas()
+    _seed_snippets()
     _cleanup_generated()
     _reset_orphaned_lanes()
     _reconnect_integrations()
