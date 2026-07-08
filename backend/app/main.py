@@ -113,6 +113,7 @@ def _migrate() -> None:
         "lanes": {"hidden": "BOOLEAN DEFAULT 0"},
         "integrations": {"eula_accepted": "BOOLEAN DEFAULT 0"},
         "attachments": {"extracted_text": "TEXT"},
+        "lane_messages": {"ttft_ms": "INTEGER"},
     }
     insp = inspect(engine)
     existing_tables = set(insp.get_table_names())

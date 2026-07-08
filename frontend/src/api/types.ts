@@ -69,6 +69,7 @@ export interface LaneMessage {
   order_index: number;
   usage_json: Record<string, any> | null;
   latency_ms: number | null;
+  ttft_ms: number | null;
   cost_usd: number | null;
   error: string | null;
   created_at: string;

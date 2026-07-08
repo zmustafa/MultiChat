@@ -129,6 +129,7 @@ def _serialize_detail(db: DbSession, s: ChatSession) -> SessionDetail:
                 order_index=m.order_index,
                 usage_json=m.usage_json,
                 latency_ms=m.latency_ms,
+                ttft_ms=m.ttft_ms,
                 cost_usd=m.cost_usd,
                 error=m.error,
                 created_at=m.created_at,

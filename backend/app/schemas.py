@@ -174,6 +174,7 @@ class LaneMessageOut(BaseModel):
     order_index: int
     usage_json: dict | None
     latency_ms: int | None
+    ttft_ms: int | None = None
     cost_usd: float | None
     error: str | None
     created_at: datetime

@@ -237,6 +237,7 @@ def build_export(db: DbSession, user: User) -> bytes:
                         "order_index": m.order_index,
                         "usage_json": m.usage_json,
                         "latency_ms": m.latency_ms,
+                        "ttft_ms": m.ttft_ms,
                         "cost_usd": m.cost_usd,
                         "error": m.error,
                         "created_at": _iso(m.created_at),
@@ -520,6 +521,7 @@ def restore_import(db: DbSession, user: User, zip_bytes: bytes) -> dict:
                     order_index=m.get("order_index", 0),
                     usage_json=m.get("usage_json"),
                     latency_ms=m.get("latency_ms"),
+                    ttft_ms=m.get("ttft_ms"),
                     cost_usd=m.get("cost_usd"),
                     error=m.get("error"),
                 )

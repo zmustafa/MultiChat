@@ -419,6 +419,7 @@ async def run_lane(
     db = SessionLocal()
     started = time.monotonic()
     full_text = ""
+    ttft_ms: int | None = None
     persisted = False
     error: str | None = None
     tool_call_rows: list[tuple[str, dict, Any]] = []
@@ -486,6 +487,8 @@ async def run_lane(
                         )
                     )
                 elif ev.type == "token" and ev.text:
+                    if ttft_ms is None:
+                        ttft_ms = int((time.monotonic() - started) * 1000)
                     iter_text += ev.text
                     full_text += ev.text
                     _progress[(session_id, lane_id)] = {
@@ -636,6 +639,8 @@ async def run_lane(
                     if cancel.is_set():
                         break
                     if ev.type == "token" and ev.text:
+                        if ttft_ms is None:
+                            ttft_ms = int((time.monotonic() - started) * 1000)
                         full_text += ev.text
                         await queue.put(
                             sse("chunk", {"lane_id": lane_id, "delta": ev.text})
@@ -708,6 +713,7 @@ async def run_lane(
             order_index=turn.order_index,
             usage_json=usage,
             latency_ms=latency_ms,
+            ttft_ms=ttft_ms,
             cost_usd=0.0,
             error=None,
         )
@@ -740,6 +746,7 @@ async def run_lane(
                     "message": {"id": lm.id, "content": full_text},
                     "usage": usage,
                     "latency_ms": latency_ms,
+                    "ttft_ms": ttft_ms,
                     "cost_usd": 0.0,
                 },
             )
@@ -764,6 +771,7 @@ async def run_lane(
                             content=full_text,
                             order_index=turn.order_index,
                             latency_ms=int((time.monotonic() - started) * 1000),
+                            ttft_ms=ttft_ms,
                             cost_usd=0.0,
                         )
                     )

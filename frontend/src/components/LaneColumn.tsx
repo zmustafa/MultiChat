@@ -969,7 +969,9 @@ export function LaneColumn({
                           />
                           {(m.latency_ms != null || m.usage_json) && (
                             <span className="text-[10px] text-gray-500 dark:text-gray-400">
-                              {m.latency_ms != null && `${m.latency_ms} ms`}
+                              {m.latency_ms != null && `${(m.latency_ms / 1000).toFixed(1)} s`}
+                              {m.ttft_ms != null &&
+                                ` · ${(m.ttft_ms / 1000).toFixed(1)} s to first token`}
                               {m.usage_json?.completion_tokens != null &&
                                 ` · ${m.usage_json.completion_tokens} tok`}
                               {m.usage_json?.completion_tokens != null &&
@@ -985,7 +987,9 @@ export function LaneColumn({
                       )}
                       {m.error && (m.latency_ms != null || m.usage_json) && (
                         <div className="mt-1 text-[10px] text-gray-500 dark:text-gray-400">
-                          {m.latency_ms != null && `${m.latency_ms} ms`}
+                          {m.latency_ms != null && `${(m.latency_ms / 1000).toFixed(1)} s`}
+                          {m.ttft_ms != null &&
+                            ` · ${(m.ttft_ms / 1000).toFixed(1)} s to first token`}
                           {m.usage_json?.completion_tokens != null &&
                             ` · ${m.usage_json.completion_tokens} tok`}
                           {m.usage_json?.completion_tokens != null &&

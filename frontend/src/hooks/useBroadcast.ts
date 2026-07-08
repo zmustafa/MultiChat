@@ -18,6 +18,7 @@ export interface LiveLane {
   toolCalls: LiveToolCall[];
   statusText?: string;
   latencyMs?: number;
+  ttftMs?: number;
   costUsd?: number;
   usage?: Record<string, any>;
   error?: string;
@@ -168,6 +169,7 @@ export function useBroadcast(sessionId: string | null, onComplete?: () => void) 
           update(d.lane_id, {
             status: "done",
             latencyMs: d.latency_ms,
+            ttftMs: d.ttft_ms,
             costUsd: d.cost_usd,
             usage: d.usage,
           });
