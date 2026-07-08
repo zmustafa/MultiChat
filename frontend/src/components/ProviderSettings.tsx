@@ -80,7 +80,7 @@ function OAuthConnect({ provider }: { provider: Provider }) {
     intervalMsRef.current = intervalMs;
     pollingRef.current = true;
     if (armTimerRef.current) clearTimeout(armTimerRef.current);
-    armTimerRef.current = setTimeout(runInterval, 10000);
+    armTimerRef.current = setTimeout(runInterval, 2000);
   };
   const stopPolling = () => {
     pollingRef.current = false;
