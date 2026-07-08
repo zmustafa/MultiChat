@@ -1,0 +1,93 @@
+@import "highlight.js/styles/github-dark.css";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* Base foreground/background per theme so any element relying on inherited color stays
+     legible in dark mode (Tailwind toggles the `dark` class on <html>). */
+  color: #111827; /* gray-900 */
+  background-color: #f9fafb; /* gray-50 */
+}
+
+.dark body {
+  color: #e5e7eb; /* gray-200 */
+  background-color: #030712; /* gray-950 */
+}
+
+/* `text-gray-400` is too faint on light backgrounds (fails WCAG AA at ~2.4:1). In light
+   mode only, render it one step darker (gray-500 ≈ 4.8:1); dark mode keeps gray-400, which
+   is already legible on dark surfaces. */
+html:not(.dark) .text-gray-400 {
+  color: #6b7280; /* gray-500 */
+}
+
+.markdown pre {
+  background: #0d1117;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  overflow-x: auto;
+  /* Code blocks are dark (#0d1117) in both themes. In dark mode they sit on a nearly-black
+     page/bubble and visually merge, so give them a delineating border (and a subtle ring in
+     dark mode) to read as a distinct, elevated surface. */
+  border: 1px solid #30363d;
+}
+
+.dark .markdown pre {
+  /* The message bubble is gray-900 and the github-dark code bg (#0d1117) is nearly the same
+     darkness, so code blocks visually merge. Raise the code panel to an elevated gray-800
+     surface with a clear border so it reads as a distinct block. */
+  background: #1f2937; /* gray-800 */
+  border-color: #4b5563; /* gray-600 */
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+/* highlight.js (github-dark) paints its own #0d1117 background onto .hljs code; clear it in
+   dark mode so the elevated panel above shows through instead of a near-black inner block. */
+.dark .markdown pre code,
+.dark .markdown pre code.hljs {
+  background: transparent;
+}
+
+.markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+}
+
+/* Code blocks always sit on the dark #0d1117 pre background, so their text must be light
+   even when there is no language (no hljs class to color it). highlight.js token spans keep
+   their own colors; this only sets the default/base text color. */
+.markdown pre code {
+  color: #e6edf3;
+}
+
+.markdown p {
+  margin: 0.5rem 0;
+}
+
+.markdown ul,
+.markdown ol {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+  list-style: revert;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3 {
+  font-weight: 600;
+  margin: 0.75rem 0 0.35rem;
+}
+
+.markdown a {
+  color: #3b82f6;
+  text-decoration: underline;
+}

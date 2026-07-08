@@ -1,0 +1,48 @@
+name: Bug report
+description: Report a problem with MultiChat
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to ...
+        2. Click ...
+        3. See error
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Git commit SHA or release tag.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Frontend (UI)
+        - Backend (API)
+        - Providers / OAuth
+        - Tools (web_search / fetch_url)
+        - Evals / Insights
+        - Docker / setup
+        - Other
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: OS, browser, Python version, Node version, Docker vs local.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / screenshots
+      description: Paste backend logs or console errors. **Redact any API keys/secrets.**

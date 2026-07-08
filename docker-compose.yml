@@ -1,0 +1,28 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "5001:5001"
+    environment:
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: sqlite:////data/chatbot.db
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5000}
+      UPLOAD_DIR: /data/uploads
+    volumes:
+      - backend_data:/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE: http://localhost:5001
+    ports:
+      - "5000:5000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  backend_data:

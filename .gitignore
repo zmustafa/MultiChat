@@ -1,0 +1,41 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# ---- Secrets & local data (NEVER commit) ----
+.env
+.env.local
+.env.*.local
+.jwt_secret
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+*.pem
+*.key
+
+# Uploaded / generated user content
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# ---- Node / frontend ----
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# ---- Editors / OS ----
+.idea/
+.DS_Store
+Thumbs.db
+*.log
