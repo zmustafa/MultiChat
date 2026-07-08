@@ -14,6 +14,22 @@ export function useSessions() {
   });
 }
 
+/**
+ * Poll which chats currently have a lane generating (active or background), so the
+ * sidebar can show a live spinner next to them. Cheap in-memory backend lookup.
+ */
+export function useActiveSessions() {
+  return useQuery({
+    queryKey: ["sessions", "active"],
+    queryFn: () =>
+      apiFetch<{ session_ids: string[] }>("/api/sessions/active"),
+    refetchInterval: 1500,
+    // Keep polling even when the tab/window is not focused, so the sidebar spinner
+    // still reflects chats generating in the background.
+    refetchIntervalInBackground: true,
+  });
+}
+
 export function useSession(id: string | null) {
   return useQuery({
     queryKey: ["session", id],

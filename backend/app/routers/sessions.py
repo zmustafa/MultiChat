@@ -200,6 +200,25 @@ def list_sessions(
     return out
 
 
+@router.get("/active")
+def active_sessions(
+    user: User = Depends(current_user), db: DbSession = Depends(get_db)
+) -> dict:
+    """Session ids (owned by the caller) that currently have a lane generating, so the
+    sidebar can show a live spinner on those chats."""
+    from ..broadcast import active_session_ids
+
+    ids = active_session_ids()
+    if not ids:
+        return {"session_ids": []}
+    owned = db.scalars(
+        select(ChatSession.id).where(
+            ChatSession.user_id == user.id, ChatSession.id.in_(ids)
+        )
+    ).all()
+    return {"session_ids": list(owned)}
+
+
 @router.get("/search", response_model=list[SearchHit])
 def search_sessions(
     q: str,

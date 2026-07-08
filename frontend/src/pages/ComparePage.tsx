@@ -25,6 +25,7 @@ import { useProviders } from "../hooks/useProviders";
 import { useTheme } from "../hooks/useTheme";
 import { seedLaneCollapse } from "../utils/laneCollapse";
 import {
+  useActiveSessions,
   useSession,
   useSessionMutations,
   useSessions,
@@ -198,6 +199,16 @@ export function ComparePage() {
       ),
     [live],
   );
+
+  // Which chats currently have a lane generating (active or background), for the sidebar
+  // spinner. The poll is authoritative; we also fold in the active chat's local live state
+  // so its spinner appears/disappears instantly rather than waiting for the next poll.
+  const { data: activeSessions } = useActiveSessions();
+  const generatingIds = useMemo(() => {
+    const s = new Set(activeSessions?.session_ids ?? []);
+    if (activeId && anyLaneBusy) s.add(activeId);
+    return s;
+  }, [activeSessions, activeId, anyLaneBusy]);
 
   // Global keyboard shortcuts: `/` focuses the prompt box, Alt+1..9 focuses a lane's inline
   // input, and Esc stops all in-flight responses. (Ctrl+K palette + Ctrl/⌘+Enter send are
@@ -801,6 +812,7 @@ export function ComparePage() {
           sessions={sessions}
           personas={personas}
           activeId={activeId}
+          generatingIds={generatingIds}
           onSelect={setActiveId}
           onNew={newTopic}
           onCollapse={() => setNavCollapsed(true)}

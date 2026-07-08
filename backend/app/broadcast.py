@@ -73,6 +73,11 @@ def active_lane_ids(session_id: str) -> list[str]:
     return [lid for (sid, lid) in _cancels.keys() if sid == session_id]
 
 
+def active_session_ids() -> set[str]:
+    """Session ids with at least one lane currently generating."""
+    return {sid for (sid, _lid) in _cancels.keys()}
+
+
 async def _events_until_cancel(
     stream: AsyncIterator[Any], cancel: asyncio.Event
 ) -> AsyncIterator[Any]:

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type { Persona } from "../api/types";
 import { usePersonas } from "../hooks/usePersonas";
-import { useSessions, useSessionMutations } from "../hooks/useSessions";
+import { useSessions, useSessionMutations, useActiveSessions } from "../hooks/useSessions";
 import { seedLaneCollapse } from "../utils/laneCollapse";
 import { SessionSidebar } from "./SessionSidebar";
 
@@ -17,6 +17,8 @@ export function SidebarNav() {
   const activeId = sessionId ?? localStorage.getItem("multichat_active");
   const { data: sessions = [] } = useSessions();
   const { data: personas = [] } = usePersonas();
+  const { data: active } = useActiveSessions();
+  const generatingIds = new Set(active?.session_ids ?? []);
   const sm = useSessionMutations();
   const [navCollapsed, setNavCollapsed] = useState(
     () => localStorage.getItem("multichat_nav_collapsed") === "1"
@@ -81,6 +83,7 @@ export function SidebarNav() {
       sessions={sessions}
       personas={personas}
       activeId={activeId}
+      generatingIds={generatingIds}
       onSelect={(id) => nav(`/c/${id}`)}
       onNew={newTopic}
       onCollapse={() => setNavCollapsed(true)}
