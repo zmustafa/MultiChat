@@ -908,10 +908,18 @@ export function LaneColumn({
                               : "Request sent · awaiting response…")}
                         </div>
                       )}
-                      {liveHere.toolCalls.map((tc) => (
-                        <ToolCallCard key={tc.tool_call_id} call={tc} />
-                      ))}
                       <MessageRenderer content={liveHere.content || "…"} />
+                      {liveHere.toolCalls.length > 0 && (
+                        <ToolCallCard
+                          key={
+                            liveHere.toolCalls[liveHere.toolCalls.length - 1]
+                              .tool_call_id
+                          }
+                          call={
+                            liveHere.toolCalls[liveHere.toolCalls.length - 1]
+                          }
+                        />
+                      )}
                     </div>
                   )}
                   {!liveHere && m && (
