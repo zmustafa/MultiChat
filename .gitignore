@@ -39,3 +39,6 @@ dist/
 .DS_Store
 Thumbs.db
 *.log
+
+# ---- Local machine-specific scripts (auto-start, etc.) ----
+scripts/
