@@ -398,6 +398,7 @@ class SnippetOut(BaseModel):
 
 class UserSettings(BaseModel):
     custom_instructions: str | None = None
+    new_chat_use_default_persona: bool = False
 
 
 class SearchHit(BaseModel):

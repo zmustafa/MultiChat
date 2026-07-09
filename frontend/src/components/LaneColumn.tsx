@@ -790,6 +790,7 @@ export function LaneColumn({
           <div
             ref={scrollRef}
             onScroll={handleScroll}
+            data-lane-scroll
             className={`min-h-0 flex-1 overflow-y-auto ${
               density === "compact" ? "p-1.5 text-[13px]" : "p-2"
             }`}
@@ -845,6 +846,8 @@ export function LaneColumn({
               return (
                 <div
                   key={turn.id}
+                  data-turn-id={turn.id}
+                  data-turn-index={turnIdx}
                   className="space-y-1.5 border-b border-gray-100 pb-2 dark:border-gray-800"
                   style={
                     virtualize

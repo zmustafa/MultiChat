@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { apiFetch, mediaUrl } from "../api/client";
 import type { Attachment, Lane } from "../api/types";
 import { useSnippets } from "../hooks/useExtras";
@@ -16,6 +16,8 @@ interface Props {
   initialTextKey?: number;
   /** Focus the prompt box whenever this changes (e.g. the active chat id). */
   autoFocusKey?: number | string;
+  /** Optional control rendered inline in the send row (left of the target selector). */
+  leftAccessory?: ReactNode;
   onSend: (
     content: string,
     attachmentIds: string[],
@@ -38,6 +40,7 @@ export function LaneComposer({
   initialText,
   initialTextKey,
   autoFocusKey,
+  leftAccessory,
   onSend,
 }: Props) {
   const [text, setText] = useState("");
@@ -390,6 +393,7 @@ export function LaneComposer({
           hidden
           onChange={(e) => uploadFiles(Array.from(e.target.files ?? []))}
         />
+        {leftAccessory}
         <select
           value={target}
           onChange={(e) => setTarget(e.target.value)}

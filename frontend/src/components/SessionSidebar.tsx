@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { asUtcDate } from "../api/client";
 import type { Persona, SearchHit, SessionListItem } from "../api/types";
-import { searchSessions, useFolderMutations, useFolders } from "../hooks/useExtras";
+import { searchSessions, useFolderMutations, useFolders, useUserSettings } from "../hooks/useExtras";
 import { useDismiss } from "../hooks/useDismiss";
 import { useSessionMutations } from "../hooks/useSessions";
 
@@ -43,6 +43,17 @@ export function SessionSidebar({
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
+  const { data: userSettings } = useUserSettings();
+
+  // "New chat" either launches the default persona directly (when the user opted into that
+  // in Settings → General) or opens the persona picker.
+  const defaultPersona = personas.find((p) => p.is_default);
+  const autoDefault =
+    !!userSettings?.new_chat_use_default_persona && !!defaultPersona;
+  const handleNewChat = () => {
+    if (autoDefault) onNew(defaultPersona);
+    else setMenuOpen((o) => !o);
+  };
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchHit[]>([]);
   const [showArchived, setShowArchived] = useState(false);
@@ -98,7 +109,7 @@ export function SessionSidebar({
       <div className="relative p-2 pt-1" ref={newMenuRef}>
         <div className="flex gap-1">
           <button
-            onClick={() => setMenuOpen((o) => !o)}
+            onClick={handleNewChat}
             className="flex-1 rounded bg-brand px-3 py-1.5 text-xs font-medium text-white hover:brightness-110"
           >
             ✏️ New chat

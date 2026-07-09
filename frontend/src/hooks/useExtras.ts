@@ -79,21 +79,25 @@ export function useSnippetMutations() {
 
 // ---------------- Settings (custom instructions) ----------------
 
+export interface UserSettingsData {
+  custom_instructions: string | null;
+  new_chat_use_default_persona: boolean;
+}
+
 export function useUserSettings() {
   return useQuery({
     queryKey: ["userSettings"],
-    queryFn: () =>
-      apiFetch<{ custom_instructions: string | null }>("/api/settings"),
+    queryFn: () => apiFetch<UserSettingsData>("/api/settings"),
   });
 }
 
 export function useSettingsMutation() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (custom_instructions: string) =>
-      apiFetch<{ custom_instructions: string | null }>("/api/settings", {
+    mutationFn: (body: Partial<UserSettingsData>) =>
+      apiFetch<UserSettingsData>("/api/settings", {
         method: "PUT",
-        body: JSON.stringify({ custom_instructions }),
+        body: JSON.stringify(body),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["userSettings"] }),
   });

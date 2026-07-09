@@ -31,7 +31,7 @@ function CustomInstructions() {
         <div className="mt-2 flex items-center gap-2">
           <button
             onClick={() => {
-              save.mutate(text);
+              save.mutate({ custom_instructions: text });
               setSaved(true);
               setTimeout(() => setSaved(false), 1500);
             }}
@@ -46,10 +46,49 @@ function CustomInstructions() {
   );
 }
 
+function NewChatBehavior() {
+  const { data } = useUserSettings();
+  const save = useSettingsMutation();
+  const enabled = !!data?.new_chat_use_default_persona;
+
+  return (
+    <section className="mt-4 rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
+      <div className="border-b border-gray-200 px-5 py-4 dark:border-gray-700">
+        <h2 className="font-medium">New chat</h2>
+        <p className="mt-0.5 text-xs text-gray-500">
+          Choose what happens when you click <span className="font-medium">New chat</span>.
+        </p>
+      </div>
+      <div className="p-5">
+        <label className="flex items-start gap-3">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) =>
+              save.mutate({ new_chat_use_default_persona: e.target.checked })
+            }
+            className="mt-0.5"
+          />
+          <span className="text-sm">
+            <span className="block font-medium">
+              Auto-start the default persona
+            </span>
+            <span className="block text-xs text-gray-500">
+              When on, clicking New chat immediately launches your default persona. When
+              off, it opens the persona picker so you can choose (or start blank).
+            </span>
+          </span>
+        </label>
+      </div>
+    </section>
+  );
+}
+
 export function PersonalSettings() {
   return (
     <div className="mx-auto max-w-5xl p-4">
       <CustomInstructions />
+      <NewChatBehavior />
     </div>
   );
 }

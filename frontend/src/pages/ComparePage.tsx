@@ -73,6 +73,9 @@ export function ComparePage() {
   const [toolsOpen, setToolsOpen] = useState(false);
   const [showArtifacts, setShowArtifacts] = useState(false);
   const [promptOpen, setPromptOpen] = useState(false);
+  const [addLaneOpen, setAddLaneOpen] = useState(false);
+  const addLaneRef = useRef<HTMLDivElement>(null);
+  useDismiss(addLaneRef, addLaneOpen, () => setAddLaneOpen(false));
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
   useDismiss(moreRef, moreOpen, () => setMoreOpen(false));
@@ -579,6 +582,88 @@ export function ComparePage() {
     return [...session.turns].sort((a, b) => b.order_index - a.order_index)[0];
   }, [session]);
 
+  // Synchronized prompt navigation. Lanes can show different turns at the same visual row
+  // (e.g. a prompt re-sent to one lane), so we navigate by ROW POSITION within each lane
+  // rather than by a global turn id — that keeps every lane aligned. The current row is
+  // read from the actual scroll position so Prev/Next always move relative to what's on
+  // screen (never a stale index), and the counter reflects where you really are.
+  const [navRow, setNavRow] = useState(0);
+  const [navRowCount, setNavRowCount] = useState(0);
+
+  const laneScrollers = useCallback((): HTMLElement[] => {
+    const grid = document.querySelector("[data-compare-grid]");
+    if (!grid) return [];
+    return Array.from(
+      grid.querySelectorAll<HTMLElement>("[data-lane-scroll]"),
+    );
+  }, []);
+  const rowsOf = (sc: HTMLElement) =>
+    Array.from(sc.querySelectorAll<HTMLElement>("[data-turn-id]"));
+  // Index of the row currently pinned at the top of a lane's viewport.
+  const currentRowOf = (sc: HTMLElement) => {
+    const els = rowsOf(sc);
+    const top = sc.getBoundingClientRect().top;
+    let cur = 0;
+    for (let i = 0; i < els.length; i++) {
+      if (els[i].getBoundingClientRect().top - top <= 4) cur = i;
+      else break;
+    }
+    return cur;
+  };
+  const recomputeNav = useCallback(() => {
+    const scs = laneScrollers();
+    const count = scs.reduce((m, sc) => Math.max(m, rowsOf(sc).length), 0);
+    const ref = scs[0];
+    const cur = ref ? currentRowOf(ref) : 0;
+    setNavRowCount(count);
+    setNavRow(Math.min(cur, Math.max(0, count - 1)));
+  }, [laneScrollers]);
+  const goToRow = useCallback(
+    (n: number) => {
+      const scs = laneScrollers();
+      const count = scs.reduce((m, sc) => Math.max(m, rowsOf(sc).length), 0);
+      if (count === 0) return;
+      const target = Math.min(Math.max(0, n), count - 1);
+      scs.forEach((sc) => {
+        const els = rowsOf(sc);
+        const el = els[Math.min(target, els.length - 1)];
+        if (el) el.scrollIntoView({ block: "start", behavior: "smooth" });
+      });
+      setNavRow(target);
+    },
+    [laneScrollers],
+  );
+  // Prev/Next move relative to the row actually on screen right now.
+  const goRelative = useCallback(
+    (delta: number) => {
+      const scs = laneScrollers();
+      const from = scs[0] ? currentRowOf(scs[0]) : navRow;
+      goToRow(from + delta);
+    },
+    [laneScrollers, goToRow, navRow],
+  );
+  // Keep the counter/current row in sync while the user scrolls any lane manually.
+  useEffect(() => {
+    let raf = 0;
+    const onScroll = (e: Event) => {
+      const t = e.target as HTMLElement;
+      if (!t || typeof t.matches !== "function" || !t.matches("[data-lane-scroll]"))
+        return;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(recomputeNav);
+    };
+    document.addEventListener("scroll", onScroll, true);
+    return () => {
+      document.removeEventListener("scroll", onScroll, true);
+      cancelAnimationFrame(raf);
+    };
+  }, [recomputeNav]);
+  // Recompute after the transcript renders / the chat or its turns change.
+  useEffect(() => {
+    const id = window.setTimeout(recomputeNav, 200);
+    return () => window.clearTimeout(id);
+  }, [recomputeNav, activeId, session?.turns.length, session?.lanes.length]);
+
   const judgeLane = session?.lanes.find((l) => l.role === "judge");
 
   // Auto-generate a short AI title (via the default provider) for a "New topic" chat
@@ -853,6 +938,41 @@ export function ComparePage() {
             placeholder="Topic title"
             className="rounded border border-gray-300 px-2 py-1 text-sm font-medium dark:border-gray-600 dark:bg-gray-800"
           />
+          <div className="relative" ref={addLaneRef}>
+            <button
+              disabled={!session}
+              onClick={() => setAddLaneOpen((o) => !o)}
+              title="Add a model lane to this comparison"
+              className="rounded border border-gray-300 px-2 py-1 text-xs disabled:opacity-40 dark:border-gray-600"
+            >
+              ➕ Add Lane{addLaneOpen ? " ▾" : ""}
+            </button>
+            {addLaneOpen && session && (
+              <div className="absolute left-0 z-30 mt-1 w-72 rounded-lg border border-gray-200 bg-white p-3 shadow-lg dark:border-gray-700 dark:bg-gray-900">
+                <div className="mb-2 text-xs font-semibold text-gray-500 dark:text-gray-400">
+                  Add a lane
+                </div>
+                {providers.length > 0 ? (
+                  <ModelPicker
+                    providers={providers}
+                    onAdd={(provider_id, model, role) => {
+                      addLane(provider_id, model, role);
+                      setAddLaneOpen(false);
+                    }}
+                    allowJudge
+                  />
+                ) : (
+                  <div className="text-xs text-amber-600">
+                    No providers configured.{" "}
+                    <Link to="/settings" className="underline">
+                      Add one in Settings
+                    </Link>
+                    .
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
           <button
             disabled={!session}
             onClick={() => setPromptOpen((o) => !o)}
@@ -1196,21 +1316,6 @@ export function ComparePage() {
           />
         )}
 
-        {providers.length > 0 && session && (
-          <div className="border-b border-gray-100 px-3 py-2 dark:border-gray-800">
-            <ModelPicker providers={providers} onAdd={addLane} allowJudge />
-          </div>
-        )}
-        {providers.length === 0 && (
-          <div className="border-b border-gray-100 px-3 py-2 text-sm text-amber-600 dark:border-gray-800">
-            No providers configured.{" "}
-            <Link to="/settings" className="underline">
-              Add one in Settings
-            </Link>
-            .
-          </div>
-        )}
-
         <div className="min-h-0 flex-1">
           {!session ? (
             <div className="flex h-full items-center justify-center text-sm text-gray-500">
@@ -1337,6 +1442,31 @@ export function ComparePage() {
             initialText={editDraft?.text}
             initialTextKey={editDraft?.ts}
             autoFocusKey={activeId ?? undefined}
+            leftAccessory={
+              navRowCount > 1 ? (
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => goRelative(-1)}
+                    disabled={navRow <= 0}
+                    title="Scroll all lanes to the previous prompt"
+                    className="rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
+                  >
+                    ↑ Prev
+                  </button>
+                  <span className="min-w-[3rem] text-center text-[11px] tabular-nums text-gray-500 dark:text-gray-400">
+                    {navRow + 1} / {navRowCount}
+                  </span>
+                  <button
+                    onClick={() => goRelative(1)}
+                    disabled={navRow >= navRowCount - 1}
+                    title="Scroll all lanes to the next prompt"
+                    className="rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
+                  >
+                    Next ↓
+                  </button>
+                </div>
+              ) : undefined
+            }
             onSend={async (content, attachmentIds, targetLaneIds) => {
               // Sending while a response is still streaming interrupts it: stop the
               // in-flight lanes (keeping the partial answer generated so far) and

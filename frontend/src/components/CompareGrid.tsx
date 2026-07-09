@@ -224,7 +224,9 @@ export function CompareGrid({
             ))}
           </div>
         )}
-        <div className="flex min-h-0 flex-1">{maxed && renderLane(maxed)}</div>
+        <div className="flex min-h-0 flex-1" data-compare-grid>
+          {maxed && renderLane(maxed)}
+        </div>
       </div>
     );
   }
@@ -232,7 +234,10 @@ export function CompareGrid({
   return (
     <div className="flex h-full flex-col">
       {closedBar}
-      <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto p-3">
+      <div
+        data-compare-grid
+        className="flex min-h-0 flex-1 gap-3 overflow-x-auto p-3"
+      >
         {responders.map(renderLane)}
       </div>
     </div>

@@ -32,6 +32,9 @@ class User(Base):
     email: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(String, nullable=False)
     custom_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # When true, clicking "New chat" immediately starts the default persona instead of
+    # showing the persona picker.
+    new_chat_use_default_persona: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(default=_now)
 
     providers: Mapped[list["Provider"]] = relationship(

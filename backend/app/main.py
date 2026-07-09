@@ -102,7 +102,10 @@ def _migrate() -> None:
     from sqlalchemy import inspect, text
 
     additions = {
-        "users": {"custom_instructions": "TEXT"},
+        "users": {
+            "custom_instructions": "TEXT",
+            "new_chat_use_default_persona": "BOOLEAN DEFAULT 0",
+        },
         "sessions": {
             "folder_id": "VARCHAR",
             "pinned": "BOOLEAN DEFAULT 0",
