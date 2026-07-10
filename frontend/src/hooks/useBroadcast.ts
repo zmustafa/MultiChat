@@ -165,15 +165,23 @@ export function useBroadcast(sessionId: string | null, onComplete?: () => void) 
             };
           });
           break;
-        case "lane_done":
-          update(d.lane_id, {
+        case "lane_done": {
+          // Adopt the server's final content as authoritative: the backend reconciles
+          // download links (rewriting fabricated/omitted file links to the real
+          // /api/files/ URLs) after streaming, so the streamed text may be out of date.
+          const patch: Partial<LiveLane> = {
             status: "done",
             latencyMs: d.latency_ms,
             ttftMs: d.ttft_ms,
             costUsd: d.cost_usd,
             usage: d.usage,
-          });
+          };
+          if (typeof d.message?.content === "string") {
+            patch.content = d.message.content;
+          }
+          update(d.lane_id, patch);
           break;
+        }
         case "lane_error":
           // Ignore empty-detail errors — these are abort artifacts from a stream that
           // was interrupted (the user sent a new message); they'd otherwise flash a

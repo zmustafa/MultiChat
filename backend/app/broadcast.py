@@ -662,20 +662,46 @@ async def run_lane(
                     )
                     break
 
-        # Guarantee generated-file download links reach the user: if any generate_*
-        # tool produced a file but the model's answer doesn't include the link (weaker
-        # models often omit it), append the unique links to the response.
-        if "/api/files/" not in full_text:
-            seen: set[str] = set()
-            links: list[str] = []
-            for _name, _args, _res in tool_call_rows:
-                txt = (_res or {}).get("result") or ""
-                for m in re.finditer(r"\[([^\]]+)\]\((/api/files/[^)\s]+)\)", txt):
-                    label, url = m.group(1), m.group(2)
-                    if url not in seen:
-                        seen.add(url)
-                        links.append(f"[{label}]({url})")
-            if links:
+        # Reconcile generated-file download links. The generate_* tools return the real
+        # download URL (/api/files/<id>?name=...), but some models (e.g. gpt-5.6) either
+        # omit it or fabricate a bogus link (a chat/localhost URL) in its place. Collect
+        # the real links from the tool results, then (a) rewrite any fabricated download
+        # links to point at the real files and (b) append links the model dropped.
+        real_links: list[tuple[str, str]] = []
+        _seen_urls: set[str] = set()
+        for _name, _args, _res in tool_call_rows:
+            txt = (_res or {}).get("result") or ""
+            for m in re.finditer(r"\[([^\]]+)\]\((/api/files/[^)\s]+)\)", txt):
+                label, url = m.group(1), m.group(2)
+                if url not in _seen_urls:
+                    _seen_urls.add(url)
+                    real_links.append((label, url))
+
+        if real_links:
+            # (a) Rewrite fabricated download links — markdown links whose text looks like
+            # a download but whose URL is not a real /api/files/ link — to the real URLs,
+            # consumed in order.
+            real_urls = [u for _l, u in real_links]
+            _consumed = {"n": 0}
+
+            def _fix_link(m: "re.Match[str]") -> str:
+                text, url = m.group(1), m.group(2)
+                if url.startswith("/api/files/"):
+                    return m.group(0)
+                looks_like_download = "download" in text.lower() or "\U0001F4E5" in text
+                if looks_like_download and _consumed["n"] < len(real_urls):
+                    new_url = real_urls[_consumed["n"]]
+                    _consumed["n"] += 1
+                    return f"[{text}]({new_url})"
+                return m.group(0)
+
+            fixed = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", _fix_link, full_text)
+            if fixed != full_text:
+                full_text = fixed
+
+            # (b) Append any real links the model omitted entirely.
+            if "/api/files/" not in full_text:
+                links = [f"[{label}]({url})" for label, url in real_links]
                 addition = ("\n\n" if full_text.strip() else "") + (
                     "**Generated file(s):**\n\n" + "\n\n".join(links)
                 )

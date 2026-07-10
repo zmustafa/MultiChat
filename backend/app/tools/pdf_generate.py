@@ -6,7 +6,7 @@ from xml.sax.saxutils import escape
 
 from reportlab.lib.colors import HexColor
 from reportlab.lib.enums import TA_LEFT
-from reportlab.lib.pagesizes import LETTER
+from reportlab.lib.pagesizes import LETTER, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
@@ -85,6 +85,79 @@ def _chart_drawing(spec: dict):
         return d
     except Exception:  # noqa: BLE001
         return None
+
+
+# A table is considered "wide" (and triggers landscape orientation) when it has at
+# least this many columns. Wide tables clip off the right edge in portrait.
+_WIDE_TABLE_COLS = 5
+
+
+def _table_columns(table: dict) -> int:
+    """Number of columns declared by a table spec (0 if not a usable table)."""
+    if not isinstance(table, dict):
+        return 0
+    cols = table.get("columns") or []
+    return len(cols) if isinstance(cols, list) else 0
+
+
+def _column_widths(data: list[list[str]], avail_width: float) -> list[float]:
+    """Distribute the available width across columns proportional to their content
+    length so a narrow "ID" column doesn't get the same width as a long "Effect"
+    column. Every column gets a sane minimum and the total fills the page width."""
+    n = len(data[0])
+    # Longest text (in characters) seen in each column, header included.
+    max_len = [1] * n
+    for row in data:
+        for i in range(n):
+            if i < len(row):
+                cell = row[i] or ""
+                longest_word = max((len(w) for w in cell.split()), default=0)
+                max_len[i] = max(max_len[i], len(cell) * 0.55 + longest_word * 0.45)
+    total = sum(max_len) or 1
+    min_w = min(0.6 * inch, avail_width / n)
+    widths = [max(min_w, avail_width * (w / total)) for w in max_len]
+    # Normalise so the widths sum exactly to the available width.
+    scale = avail_width / sum(widths)
+    return [w * scale for w in widths]
+
+
+def _table_flowable(
+    table: dict, avail_width: float, cell_style: ParagraphStyle, head_style: ParagraphStyle
+):
+    """Build a Table whose cells wrap text and whose columns fit the page width."""
+    cols = table.get("columns") or []
+    rows = table.get("rows") or []
+    if not cols:
+        return None
+    n = len(cols)
+    raw: list[list[str]] = [[str(c) for c in cols]]
+    for r in rows:
+        raw.append([str(r[i]) if i < len(r) else "" for i in range(n)])
+    col_widths = _column_widths(raw, avail_width)
+    # Wrap every cell in a Paragraph so long text flows onto multiple lines instead
+    # of overflowing the column.
+    data = [[Paragraph(escape(raw[0][i]), head_style) for i in range(n)]]
+    for r in raw[1:]:
+        data.append([Paragraph(escape(r[i]), cell_style) for i in range(n)])
+    tbl = Table(data, colWidths=col_widths, hAlign="LEFT", repeatRows=1)
+    tbl.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), HexColor("#4F46E5")),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#CBD5E1")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+                 [HexColor("#FFFFFF"), HexColor("#F1F5F9")]),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ]
+        )
+    )
+    return tbl
+
 
 
 class PdfGenerateTool:
@@ -211,18 +284,39 @@ class PdfGenerateTool:
             body_style = ParagraphStyle(
                 "Body", parent=styles["BodyText"], alignment=TA_LEFT, spaceAfter=6, leading=15
             )
+            cell_style = ParagraphStyle(
+                "Cell", parent=styles["BodyText"], fontSize=9, leading=11, spaceAfter=0
+            )
+            cell_head_style = ParagraphStyle(
+                "CellHead",
+                parent=styles["BodyText"],
+                fontName="Helvetica-Bold",
+                fontSize=9,
+                leading=11,
+                spaceAfter=0,
+                textColor=HexColor("#FFFFFF"),
+            )
+
+            # Pick orientation up front: if any table is wide, use landscape for the whole
+            # document so the table has room instead of clipping off the right edge.
+            max_cols = 0
+            for sec in sections:
+                if isinstance(sec, dict):
+                    max_cols = max(max_cols, _table_columns(sec.get("table")))
+            pagesize = landscape(LETTER) if max_cols >= _WIDE_TABLE_COLS else LETTER
 
             stored_name = new_stored_name("pdf")
             path = os.path.join(generated_dir(), stored_name)
             doc = SimpleDocTemplate(
                 path,
-                pagesize=LETTER,
+                pagesize=pagesize,
                 topMargin=0.9 * inch,
                 bottomMargin=0.9 * inch,
                 leftMargin=0.9 * inch,
                 rightMargin=0.9 * inch,
                 title=title,
             )
+            avail_width = pagesize[0] - doc.leftMargin - doc.rightMargin
             story: list = [Paragraph(escape(title), title_style)]
             if subtitle:
                 story.append(Paragraph(escape(subtitle), sub_style))
@@ -254,31 +348,8 @@ class PdfGenerateTool:
 
                 table = sec.get("table")
                 if isinstance(table, dict):
-                    cols = table.get("columns") or []
-                    rows = table.get("rows") or []
-                    if cols:
-                        data = [[str(c) for c in cols]]
-                        for r in rows:
-                            data.append(
-                                [str(r[i]) if i < len(r) else "" for i in range(len(cols))]
-                            )
-                        tbl = Table(data, hAlign="LEFT")
-                        tbl.setStyle(
-                            TableStyle(
-                                [
-                                    ("BACKGROUND", (0, 0), (-1, 0), HexColor("#4F46E5")),
-                                    ("TEXTCOLOR", (0, 0), (-1, 0), HexColor("#FFFFFF")),
-                                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                                    ("FONTSIZE", (0, 0), (-1, -1), 9),
-                                    ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#CBD5E1")),
-                                    ("ROWBACKGROUNDS", (0, 1), (-1, -1),
-                                     [HexColor("#FFFFFF"), HexColor("#F1F5F9")]),
-                                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                                ]
-                            )
-                        )
+                    tbl = _table_flowable(table, avail_width, cell_style, cell_head_style)
+                    if tbl is not None:
                         story.append(Spacer(1, 6))
                         story.append(tbl)
 
