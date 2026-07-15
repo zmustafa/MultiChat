@@ -67,6 +67,17 @@ export function ComparePage() {
   );
   const { data: session } = useSession(activeId);
   const sm = useSessionMutations();
+
+  useEffect(() => {
+    const topic =
+      session?.title ?? sessions.find(({ id }) => id === activeId)?.title;
+    document.title = activeId ? `Chat - ${topic ?? "New topic"}` : "MultiChat - Chat";
+
+    return () => {
+      document.title = "MultiChat - Chat";
+    };
+  }, [activeId, session?.title, sessions]);
+
   const [showDiff, setShowDiff] = useState(false);
   const [editDraft, setEditDraft] = useState<{ text: string; ts: number } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
