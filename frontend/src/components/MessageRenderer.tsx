@@ -1,4 +1,4 @@
-import { createContext, memo, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, isValidElement, memo, useContext, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -16,6 +16,17 @@ export const CodeFoldContext = createContext<{ signal: number; collapsed: boolea
   signal: 0,
   collapsed: false,
 });
+
+/** Flatten syntax-highlighted React nodes into the original code text. */
+function nodeText(node: React.ReactNode): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(nodeText).join("");
+  if (isValidElement(node)) {
+    return nodeText((node.props as { children?: React.ReactNode }).children);
+  }
+  return "";
+}
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -141,7 +152,7 @@ const MARKDOWN_COMPONENTS = {
     );
   },
   code({ className, children, ...props }: any) {
-    const raw = String(children);
+    const raw = nodeText(children);
     const text = raw.replace(/\n$/, "");
     const lang = /language-(\w+)/.exec(className || "")?.[1];
     // A fenced block (even a single line) arrives with a trailing newline in `raw`, which
