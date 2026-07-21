@@ -16,6 +16,7 @@ from openai import AsyncAzureOpenAI, AsyncOpenAI
 
 from ..config import settings
 from .base import LLMProvider, StreamEvent, ToolCallRequest, ToolSpec
+from .chatgpt_responses import ChatGPTResponsesProvider
 
 # Google's OpenAI-compatible surface for Gemini.
 GEMINI_OPENAI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/"
@@ -25,6 +26,16 @@ COPILOT_BASE = "https://api.githubcopilot.com"
 # `max_completion_tokens` instead. Learned at runtime so the failed first call is paid
 # only once per process, then the correct param is sent up front.
 _NEEDS_MAX_COMPLETION_TOKENS: set[str] = set()
+
+# Official OpenAI models/errors that require the Responses API for function tools.
+# Keep the runtime cache so newly introduced models only pay for one rejected Chat
+# Completions request per process.
+_RESPONSES_FOR_TOOLS: set[str] = set()
+_RESPONSES_ERROR_MARKERS = (
+    "use /v1/responses",
+    "unsupported_api_for_model",
+    "/chat/completions endpoint",
+)
 
 _PROVIDER_NAMES = {
     "openai": "OpenAI",
@@ -53,6 +64,8 @@ class OpenAIProvider(LLMProvider):
         self._model = model
         self._provider = provider
         self._fallback_models = fallback_models or []
+        self._api_key = api_key
+        self._default_headers = default_headers
 
         # Resolve default base URLs for providers that have one.
         if not base_url:
@@ -86,6 +99,7 @@ class OpenAIProvider(LLMProvider):
                 default_headers=default_headers,
                 timeout=settings.LLM_REQUEST_TIMEOUT,
             )
+        self._responses_base_url = base_url.rstrip("/") or "https://api.openai.com/v1"
 
     def _label(self) -> str:
         name = _PROVIDER_NAMES.get(self._provider, self._provider.replace("_", " ").title())
@@ -113,6 +127,16 @@ class OpenAIProvider(LLMProvider):
         tools: list[ToolSpec] | None = None,
         max_tokens: int | None = None,
     ) -> AsyncIterator[StreamEvent]:
+        # GPT-5.6 defaults to reasoning_effort=auto, a combination the Chat
+        # Completions endpoint rejects when function tools are present. Avoid the
+        # known failing request and use the endpoint that supports both features.
+        if tools and self._uses_official_openai_api() and (
+            self._model.startswith("gpt-5.6") or self._model in _RESPONSES_FOR_TOOLS
+        ):
+            async for event in self._responses_stream(messages, tools, max_tokens):
+                yield event
+            return
+
         tool_fragments: dict[int, dict[str, Any]] = {}
         cap = int(max_tokens) if max_tokens else settings.LLM_MAX_TOKENS
         kwargs: dict[str, Any] = {
@@ -136,12 +160,36 @@ class OpenAIProvider(LLMProvider):
             msg = str(exc).lower()
             cap_val = kwargs.pop("max_tokens", None)
             cap_val = kwargs.pop("max_completion_tokens", cap_val)
+            retry = False
             if cap_val and "max_completion_tokens" in msg:
                 _NEEDS_MAX_COMPLETION_TOKENS.add(self._model)
                 kwargs["max_completion_tokens"] = cap_val
+                retry = True
             elif "stream_options" in msg:
                 kwargs.pop("stream_options", None)
-            stream = await self._client.chat.completions.create(**kwargs)
+                kwargs[cap_param] = cap_val
+                retry = True
+            else:
+                kwargs[cap_param] = cap_val
+
+            if self._should_fallback_to_responses(msg, tools):
+                _RESPONSES_FOR_TOOLS.add(self._model)
+                async for event in self._responses_stream(messages, tools, max_tokens):
+                    yield event
+                return
+            if not retry:
+                raise
+
+            try:
+                stream = await self._client.chat.completions.create(**kwargs)
+            except Exception as retry_exc:  # noqa: BLE001
+                retry_msg = str(retry_exc).lower()
+                if self._should_fallback_to_responses(retry_msg, tools):
+                    _RESPONSES_FOR_TOOLS.add(self._model)
+                    async for event in self._responses_stream(messages, tools, max_tokens):
+                        yield event
+                    return
+                raise
         yield StreamEvent(type="status", phase="request_sent", text="Request sent · awaiting response…")
 
         prompt_tokens = 0
@@ -192,6 +240,36 @@ class OpenAIProvider(LLMProvider):
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
         )
+
+    def _uses_official_openai_api(self) -> bool:
+        return self._provider in ("openai", "openai_eu")
+
+    def _should_fallback_to_responses(
+        self,
+        error_message: str,
+        tools: list[ToolSpec] | None,
+    ) -> bool:
+        return bool(
+            tools
+            and self._uses_official_openai_api()
+            and any(marker in error_message for marker in _RESPONSES_ERROR_MARKERS)
+        )
+
+    def _responses_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[ToolSpec] | None,
+        max_tokens: int | None,
+    ) -> AsyncIterator[StreamEvent]:
+        responses = ChatGPTResponsesProvider(
+            model=self._model,
+            oauth_token=self._api_key,
+            base_url=self._responses_base_url,
+            fallback_models=self._fallback_models,
+            default_headers=self._default_headers,
+            chatgpt_mode=False,
+        )
+        return responses.stream(messages, tools, max_tokens)
 
     async def list_models(self) -> list[str]:
         try:

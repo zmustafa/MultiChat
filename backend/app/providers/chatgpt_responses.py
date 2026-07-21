@@ -142,17 +142,18 @@ class ChatGPTResponsesProvider(LLMProvider):
             payload["max_output_tokens"] = int(max_tokens)
 
         url = f"{self._base_url}/responses"
+        provider_name = "ChatGPT" if self._chatgpt_mode else "OpenAI"
         fn_acc: dict[str, dict[str, Any]] = {}
         completed_calls: dict[str, dict[str, Any]] = {}
         current_event: str | None = None
         _timeout = httpx.Timeout(settings.LLM_REQUEST_TIMEOUT, connect=15.0)
 
-        yield StreamEvent(type="status", phase="connecting", text=f"Connecting to ChatGPT · {self._model}…")
+        yield StreamEvent(type="status", phase="connecting", text=f"Connecting to {provider_name} · {self._model}…")
         async with httpx.AsyncClient(timeout=_timeout) as client:
             async with client.stream("POST", url, json=payload, headers=self._headers()) as resp:
                 if resp.status_code >= 400:
                     body = (await resp.aread()).decode("utf-8", "replace")
-                    raise RuntimeError(f"ChatGPT API error {resp.status_code}: {body[:500]}")
+                    raise RuntimeError(f"{provider_name} API error {resp.status_code}: {body[:500]}")
                 yield StreamEvent(type="status", phase="request_sent", text="Request sent · awaiting response…")
                 first = True
                 async for line in resp.aiter_lines():
@@ -202,7 +203,7 @@ class ChatGPTResponsesProvider(LLMProvider):
                             }
                     elif etype in ("response.error", "error"):
                         msg = (evt.get("error") or {}).get("message") if isinstance(evt, dict) else None
-                        raise RuntimeError(f"ChatGPT error: {msg or data[:200]}")
+                        raise RuntimeError(f"{provider_name} error: {msg or data[:200]}")
                     elif etype == "response.completed":
                         break
 
