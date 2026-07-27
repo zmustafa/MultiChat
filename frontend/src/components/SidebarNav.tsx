@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router";
 import type { Persona } from "../api/types";
 import { usePersonas } from "../hooks/usePersonas";
 import { useProviders } from "../hooks/useProviders";

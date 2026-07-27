@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { apiFetch } from "../api/client";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useAuth } from "../auth/AuthContext";

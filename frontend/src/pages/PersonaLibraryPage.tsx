@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router";
 import type { Persona, PersonaLane, Provider } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
 import {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router";
 import { asUtcDate } from "../api/client";
 import type { Persona, SearchHit, SessionListItem } from "../api/types";
 import { searchSessions, useFolderMutations, useFolders, useUserSettings } from "../hooks/useExtras";

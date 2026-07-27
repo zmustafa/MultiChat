@@ -1,4 +1,5 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import type { ReactElement } from "react";
+import { Navigate, Route, Routes } from "react-router";
 import { useAuth } from "./auth/AuthContext";
 import { useProviders } from "./hooks/useProviders";
 import { AppLayout } from "./components/AppLayout";
@@ -14,7 +15,7 @@ import { PersonaLibraryPage } from "./pages/PersonaLibraryPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SnippetLibraryPage } from "./pages/SnippetLibraryPage";
 
-function Protected({ children }: { children: JSX.Element }) {
+function Protected({ children }: { children: ReactElement }) {
   const { user, loading } = useAuth();
   if (loading)
     return (
@@ -31,7 +32,7 @@ function Protected({ children }: { children: JSX.Element }) {
  * When none are configured, send the user to Settings where an explicit prompt guides
  * them to add their first provider.
  */
-function RequireProvider({ children }: { children: JSX.Element }) {
+function RequireProvider({ children }: { children: ReactElement }) {
   const { data: providers, isLoading, isSuccess } = useProviders();
   if (isLoading)
     return (

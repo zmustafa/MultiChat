@@ -325,7 +325,7 @@ function StickyYouHeader({
   onBranchTurn,
 }: {
   turn: Turn;
-  scrollRef: React.RefObject<HTMLDivElement>;
+  scrollRef: React.RefObject<HTMLDivElement | null>;
   onResendTurn?: (content: string) => void;
   onResendHere?: (content: string) => void;
   onEditTurn?: (turnId: string, content: string) => void;

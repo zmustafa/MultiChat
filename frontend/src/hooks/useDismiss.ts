@@ -9,7 +9,7 @@ import { useEffect } from "react";
  * @param onClose Called when the user clicks outside or presses Escape.
  */
 export function useDismiss(
-  ref: React.RefObject<HTMLElement>,
+  ref: React.RefObject<HTMLElement | null>,
   active: boolean,
   onClose: () => void,
 ): void {

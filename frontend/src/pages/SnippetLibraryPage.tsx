@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import type { Snippet } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
 import { useSnippetMutations, useSnippets } from "../hooks/useExtras";

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router";
 import { useAuth } from "../auth/AuthContext";
 
 // Per-session flag so the warning shows once per browser session (survives page refreshes)
