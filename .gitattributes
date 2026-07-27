@@ -1,0 +1,4 @@
+# Keep binary media out of diffs and untouched by line-ending normalisation.
+*.gif binary -text
+*.png binary -text
+*.jpg binary -text

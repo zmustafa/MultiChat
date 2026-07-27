@@ -22,8 +22,7 @@ dashboard.
 > **tokens/sec** metrics, a full **Insights** dashboard (token usage, cost, provider mix,
 > activity), and new providers (**OpenAI EU**, **Azure Foundry**).
 
-<!-- Add a hero screenshot at docs/assets/hero.png -->
-![MultiChat — one prompt, many models, streaming side-by-side](docs/assets/hero.png)
+![MultiChat — one prompt broadcast to gpt-5.6-sol, claude-opus-5, claude-sonnet-5 and gemini-3.6-flash, each streaming its answer side-by-side in its own lane](docs/assets/gif/hero.gif)
 
 </div>
 
@@ -161,22 +160,20 @@ scoping · 🛡️ SSRF-guarded fetch · 🏠 runs entirely on your machine (Doc
 
 ## 📸 Screenshots
 
-<!-- Replace the placeholder images below with real captures in docs/assets/. -->
+All captured live against a real multi-lane session — nothing staged or mocked up. The blue
+dot is the mouse pointer.
 
-<table>
-<tr>
-<td width="50%"><img src="docs/assets/compare-grid.png" alt="Multi-model compare grid"><br/><sub><b>Compare grid</b> — one prompt streaming across several model lanes at once.</sub></td>
-<td width="50%"><img src="docs/assets/judge.png" alt="Judge synthesizer lane"><br/><sub><b>Judge</b> — synthesize the best answer, then copy / export to Markdown or PDF.</sub></td>
-</tr>
-<tr>
-<td width="50%"><img src="docs/assets/evals.png" alt="Parallel evaluations"><br/><sub><b>Evals</b> — prompt × model grid run in parallel with score, TTFT & tok/s.</sub></td>
-<td width="50%"><img src="docs/assets/insights.png" alt="Insights dashboard"><br/><sub><b>Insights</b> — token usage, estimated cost, provider mix & activity trends.</sub></td>
-</tr>
-<tr>
-<td width="50%"><img src="docs/assets/providers.png" alt="Provider settings"><br/><sub><b>Providers</b> — bring your own model via API key or OAuth; encrypted at rest.</sub></td>
-<td width="50%"><img src="docs/assets/tools.png" alt="Tool-call timeline"><br/><sub><b>Tools</b> — web search / fetch with a persisted, previewable tool-call timeline.</sub></td>
-</tr>
-</table>
+<img src="docs/assets/gif/compare-diff.gif" alt="Four finished model answers scrolling side-by-side, then switching to Diff view which highlights where the models agree and where they differ" width="100%">
+
+**Compare & diff** — read all four lanes side-by-side, then flip to **Diff** to see where the models agree and where they part ways.
+
+<img src="docs/assets/gif/focus-tools.gif" alt="A model calling a web search tool mid-answer, then one lane being maximized to full width to read the cited sources and sortable result table, before restoring the four-lane grid" width="100%">
+
+**Tools & focus mode** — models call `web_search` / `fetch_url` mid-answer with cited sources, and any lane can be **maximized to full width** to read it properly, then restored to the grid.
+
+<img src="docs/assets/gif/judge.gif" alt="The Judge panel holding a single synthesized best answer merged from all four lanes, scrolling through it with Copy, Markdown and PDF export actions" width="100%">
+
+**Judge** — merge every lane into one best answer, then copy or export it to Markdown or PDF.
 
 ## ⚡ Quick start (local)
 

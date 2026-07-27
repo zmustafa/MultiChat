@@ -42,3 +42,6 @@ Thumbs.db
 
 # ---- Local machine-specific scripts (auto-start, etc.) ----
 scripts/
+
+# ---- README screen-recording scratch (frames, demo uploads, encoder output) ----
+.recording/
