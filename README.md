@@ -178,10 +178,6 @@ dot is the mouse pointer.
 
 ## ⚡ Quick start (local)
 
-**Prerequisites:** [Git](https://git-scm.com/downloads), [Docker Desktop](https://www.docker.com/products/docker-desktop/),
-and an AI agent to drive the setup — **Microsoft Scout**, or
-[Visual Studio Code](https://code.visualstudio.com/) with [GitHub Copilot](https://github.com/features/copilot).
-
 ### Option 1 — set it up with Microsoft Scout
 
 1. Open **Microsoft Scout** and check that your account shows **● Connected** at the bottom left.
