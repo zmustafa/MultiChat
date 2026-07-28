@@ -16,7 +16,7 @@ dashboard.
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[Features](#-features) · [Screenshots](#-screenshots) · [Quick start](#-quick-start-local) · [How it works](#-how-it-works) · [Tech stack](#-tech-stack) · [Docs](#-documentation)
+[Features](#-features) · [Screenshots](#-screenshots) · [Quick start](#-quick-start-local) · [Connect providers](#-connect-your-ai-providers) · [How it works](#-how-it-works) · [Tech stack](#-tech-stack) · [Docs](#-documentation)
 
 > 🆕 **Latest:** parallel evaluations (5 lanes at once) with **time-to-first-token** &
 > **tokens/sec** metrics, a full **Insights** dashboard (token usage, cost, provider mix,
@@ -56,6 +56,7 @@ own keys.
 - [Features](#-features)
 - [Screenshots](#-screenshots)
 - [Quick start (local)](#-quick-start-local)
+- [Connect your AI providers](#-connect-your-ai-providers)
 - [How it works](#-how-it-works)
 - [Tech stack](#-tech-stack)
 - [Security notes](#-security-notes)
@@ -177,27 +178,87 @@ dot is the mouse pointer.
 
 ## ⚡ Quick start (local)
 
-**Prerequisites:** Docker Desktop (or Python 3.11 + Node 20 for native dev).
+**Prerequisites:** [Git](https://git-scm.com/downloads), [Docker Desktop](https://www.docker.com/products/docker-desktop/),
+and an AI agent to drive the setup — **Microsoft Scout**, or
+[Visual Studio Code](https://code.visualstudio.com/) with [GitHub Copilot](https://github.com/features/copilot).
+
+### Option 1 — set it up with Microsoft Scout
+
+1. Open **Microsoft Scout** and check that your account shows **● Connected** at the bottom left.
+2. Click **New chat** in the left sidebar.
+3. *(Optional)* Pick a model in the composer's model selector (e.g. `GPT-5.5`).
+4. Type this into the **"Describe what you want to do"** box and press **Enter**:
+
+   > Set up MultiChat from https://github.com/zmustafa/MultiChat on my computer in a folder called
+   > `C:\dev\MultiChat`: install everything it needs and start it on **http://localhost:5000** (its API
+   > on port 5001), create the sign-in account with username **admin** and password **admin**, make sure
+   > it starts again automatically whenever I turn my computer on, and then confirm the app is running
+   > and I can log in.
+
+5. Approve the steps Scout asks to run. It reports back when the app is ready.
+
+### Option 2 — set it up with VS Code + GitHub Copilot
+
+1. Open **Visual Studio Code**.
+2. Select **File → Open Folder** and open a local folder where MultiChat should live.
+3. Open **GitHub Copilot Chat** from the Copilot icon, or press `Ctrl+Alt+I`, and switch it to **Agent** mode.
+4. Ask Copilot:
+
+   > Set up MultiChat from https://github.com/zmustafa/MultiChat in this folder: install everything it
+   > needs and start it on **http://localhost:5000** (its API on port 5001), create the sign-in account
+   > with username **admin** and password **admin**, make sure it starts again automatically whenever I
+   > turn my computer on, and then confirm the app is running and I can log in.
+
+That's it — the agent handles the rest and tells you when the app is ready.
+
+### Sign in
+
+| | |
+| --- | --- |
+| **App** | **http://localhost:5000** |
+| **Username** | `admin` |
+| **Password** | `admin` |
+| API + interactive docs | http://localhost:5001/docs |
+
+MultiChat keeps running in the background and restarts with your computer, so
+**http://localhost:5000 is ready every time you sign in** — just open it and log in.
+
+> [!IMPORTANT]
+> The seeded **admin / admin** account is for local use only. **Change the password immediately**
+> (avatar menu → *Change password*) before exposing the app — see [Security notes](#-security-notes).
+
+Useful VS Code shortcuts:
+
+- Open Copilot Chat: `Ctrl+Alt+I`
+- Open the Command Palette: `Ctrl+Shift+P`
+- Open a terminal: ``Ctrl+Shift+` ``
+
+<details>
+<summary><b>Manual setup (Docker, no Copilot)</b></summary>
 
 ```bash
-# 1) Configure environment
+# 1) Clone
+git clone https://github.com/zmustafa/MultiChat.git
+cd MultiChat
+
+# 2) Configure environment
 cp .env.example .env
 # Generate a Fernet key and paste it into APP_ENCRYPTION_KEY:
 python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"
 # Also set a strong JWT_SECRET (don't ship the default).
 
-# 2) Run the whole stack
-docker compose up --build
+# 3) Run the whole stack
+docker compose up --build -d
 ```
 
-Open **http://localhost:5000**. The API + interactive docs live at
-**http://localhost:5001/docs**.
+Then open **http://localhost:5000** and sign in with **admin / admin**.
 
-A default account is seeded on first run — sign in with **admin / admin**, then
-**change the password immediately** before exposing the app (see [Security notes](#-security-notes)).
+</details>
 
 <details>
 <summary><b>Native dev (without Docker)</b></summary>
+
+Requires **Python 3.11+** and **Node 20+**.
 
 **Backend**
 
@@ -229,6 +290,62 @@ npm run dev        # http://localhost:5000  (reads VITE_API_BASE, default http:/
 4. Type a prompt and **Send** — it broadcasts to all lanes and each streams live.
 5. Optional: enable **Tools**, turn on a **Judge** lane, open **Evals** / **Insights**,
    switch to **Diff** view, export/import, or toggle dark mode.
+
+## 🔑 Connect your AI providers
+
+MultiChat ships with **no models of its own** — you connect your own accounts. After the
+first sign-in it takes you straight to **Settings → Providers**, where **＋ Add provider**
+opens a 2-step wizard. The quickest route is to **sign in with a subscription you already
+have** (GitHub Copilot, ChatGPT, Claude Pro/Max); everything else uses an **API key**.
+
+### Option 1 — sign in with an AI subscription you already have *(easiest)*
+
+Works for **GitHub Copilot**, **OpenAI (ChatGPT)** and **Anthropic Claude (Pro/Max)** — no
+API key, no separate billing.
+
+1. Go to **Settings → Providers** and click **＋ Add provider**.
+2. Pick the provider, choose **👤 OAuth sign-in** as the auth method, and click **Add provider**.
+3. In the provider's panel click **Connect**. A browser tab opens:
+   - **GitHub Copilot** — enter the device code shown in MultiChat on the GitHub page that opened.
+   - **ChatGPT** — sign in and it connects automatically. If it doesn't, paste the full
+     `http://localhost:1455/auth/callback?code=…` URL back into the box.
+   - **Claude** — sign in, then paste the `code#state` value shown by Anthropic.
+4. The panel flips to **OAuth: connected ✓** and the model list loads by itself.
+
+You can **Disconnect** at any time from the same panel.
+
+### Option 2 — connect with an API key
+
+For every other provider (and if you'd rather use a key than a sign-in).
+
+1. Go to **Settings → Providers** and click **＋ Add provider**.
+2. Pick the provider, keep **🔑 API key** as the auth method, and click **Add provider**.
+3. Paste your key (plus **base URL** / **deployment** for Azure, OpenAI-compatible and Ollama) and **Save**.
+4. Click **Test connection** — a green result means you're good.
+5. Click **↻ Refresh models**, then click a model in the list to make it the default.
+
+### Supported providers
+
+| Provider | Connect with | What you need |
+| --- | --- | --- |
+| **GitHub Copilot** | Sign-in | A GitHub account with an active Copilot subscription |
+| **OpenAI** | ChatGPT sign-in *or* API key | Your ChatGPT account, or a key from [platform.openai.com](https://platform.openai.com/api-keys) |
+| **Anthropic Claude** | Claude sign-in *or* API key | Your Claude Pro/Max subscription, or an `sk-ant-…` key |
+| **OpenAI (EU)** | API key | An EU-enabled OpenAI key (routes to `eu.api.openai.com`) |
+| **Google Gemini** | API key | Key from [Google AI Studio](https://aistudio.google.com/) |
+| **Azure OpenAI** | API key | Endpoint (base URL), API version and deployment name |
+| **Azure Foundry** | API key | `…services.ai.azure.com` endpoint, key, and a deployed model name |
+| **OpenAI-compatible** | API key + base URL | Any gateway — OpenRouter, Together, Groq, vLLM… |
+| **Ollama (local)** | Base URL | Your local Ollama server (usually no key) |
+
+### Use it in a lane
+
+On **Compare**, click **Add lane**, pick the provider and a model, and repeat for 2–6 lanes.
+Set one provider as **default** so background tasks (chat titles, the Judge, evals) know what to use.
+
+> [!NOTE]
+> Keys and OAuth tokens are **encrypted at rest** and never sent to the browser — but all usage
+> is billed to **your own** provider accounts under their terms.
 
 ## 🧩 How it works
 
