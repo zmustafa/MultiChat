@@ -176,6 +176,10 @@ dot is the mouse pointer.
 
 **Judge** — merge every lane into one best answer, then copy or export it to Markdown or PDF.
 
+<img src="docs/assets/gif/usage.gif" alt="The Insights dashboard showing message, response, tool-call and chat counters, token usage with per-model estimated cost, provider mix and tool-call status donuts, 7-day and 24-hour activity charts and a weekday-by-hour punch-card" width="100%">
+
+**Usage & cost insights** — a dashboard for messages, responses and tool calls, token usage with per-model cost estimates, provider mix, and activity trends over any time range.
+
 ## ⚡ Quick start (local)
 
 ### Option 1 — set it up with Microsoft Scout

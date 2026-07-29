@@ -10,6 +10,7 @@ Media referenced by the main [README](../../README.md).
 | `gif/compare-diff.gif` | Reading four lanes side-by-side, then the Diff view |
 | `gif/judge.gif` | The Judge panel's synthesized best answer + export actions |
 | `gif/focus-tools.gif` | A live tool call, then maximizing one lane to full width and restoring |
+| `gif/usage.gif` | The Insights dashboard: usage counters, token cost, provider mix, activity trends |
 
 Lanes used: `gpt-5.6-sol`, `claude-opus-5`, `claude-sonnet-5`, `gemini-3.6-flash` (all via the
 GitHub Copilot provider). Captured at 2375×1275, auto-cropped to 1969×1064, encoded at
@@ -17,8 +18,9 @@ GitHub Copilot provider). Captured at 2375×1275, auto-cropped to 1969×1064, en
 
 ## How these were captured
 
-All four are recorded from the **chat screen only** — no settings, provider or dashboard
-screens — against a throwaway database so no chat history is ever on screen:
+The four chat GIFs are recorded from the **chat screen only** — no settings or provider
+screens (`usage.gif` is the exception: it is the Insights dashboard) — against a throwaway
+database so no chat history is ever on screen:
 
 1. Copy `backend/chatbot.db` to `backend/demo.db` and delete every row from `sessions`
    (`PRAGMA foreign_keys=ON` so lanes/turns cascade). Keep `providers`, `personas` and
