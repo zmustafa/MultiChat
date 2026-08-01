@@ -37,19 +37,25 @@ def _safe_download_name(name: str | None, fallback: str) -> str:
     return cleaned or fallback
 
 
-def _generated_path(filename: str) -> str:
+def _generated_path(filename: str) -> str | None:
     """Resolve a stored file name to an absolute path inside the generated-files directory.
 
-    The name must match `<uuid hex>.<ext>` exactly, and the resolved path (symlinks
-    included) must stay under the generated directory. Anything else is a 404.
+    The name must match `<uuid hex>.<ext>` exactly. The returned path is taken from a
+    directory listing of the generated directory rather than built from the request, so
+    request data can never influence the location that is read or deleted. Symlinks and
+    non-regular entries are ignored. Returns ``None`` when there is no such file.
     """
     if not _NAME_RE.fullmatch(filename):
-        raise HTTPException(status_code=404, detail="File not found")
+        return None
     root = os.path.realpath(os.path.join(settings.UPLOAD_DIR, GENERATED_SUBDIR))
-    path = os.path.realpath(os.path.join(root, filename))
-    if path != root and not path.startswith(root + os.sep):
-        raise HTTPException(status_code=404, detail="File not found")
-    return path
+    try:
+        with os.scandir(root) as entries:
+            for entry in entries:
+                if entry.name == filename and entry.is_file(follow_symlinks=False):
+                    return entry.path
+    except OSError:
+        return None
+    return None
 
 
 @router.get("/{filename}")
@@ -64,7 +70,7 @@ def get_generated_file(
     are validated to prevent path traversal.
     """
     path = _generated_path(filename)
-    if not os.path.exists(path):
+    if path is None:
         raise HTTPException(status_code=404, detail="File not found")
     ext = filename.rsplit(".", 1)[1]
     download_name = _safe_download_name(name, filename)
@@ -123,10 +129,10 @@ def delete_generated_file(
             GeneratedFile.user_id == user.id,
         )
     )
-    if row is None and not os.path.exists(path):
+    if row is None and path is None:
         raise HTTPException(status_code=404, detail="File not found")
     try:
-        if os.path.exists(path):
+        if path is not None:
             os.remove(path)
     except OSError:
         pass
