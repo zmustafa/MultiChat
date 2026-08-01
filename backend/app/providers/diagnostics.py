@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session as DbSession
 
+from ..errors import log_and_describe
 from ..models import Provider
 from .registry import _resolve_model, build_provider
 
@@ -89,7 +90,8 @@ async def test_stream(provider: Provider, db: DbSession) -> AsyncIterator[dict[s
         addrs = await _dns(host)
         yield _step("endpoint", "ok", "Resolve endpoint (DNS)", f"{host} → {', '.join(addrs[:3])}")
     except Exception as exc:  # noqa: BLE001
-        yield _step("endpoint", "error", "Resolve endpoint (DNS)", f"{host}: {exc}")
+        detail = log_and_describe(exc, f"diagnostics: DNS failed for {host}")
+        yield _step("endpoint", "error", "Resolve endpoint (DNS)", f"{host}: {detail}")
         yield {"done": True, "ok": False, "detail": f"DNS failed for {host}"}
         return
 
@@ -97,7 +99,8 @@ async def test_stream(provider: Provider, db: DbSession) -> AsyncIterator[dict[s
         await _tcp_connect(host, port)
         yield _step("connect", "ok", "Connect (TCP / TLS)", f"{host}:{port}")
     except Exception as exc:  # noqa: BLE001
-        yield _step("connect", "error", "Connect (TCP / TLS)", f"{host}:{port}: {exc}")
+        detail = log_and_describe(exc, f"diagnostics: TCP connect failed for {host}:{port}")
+        yield _step("connect", "error", "Connect (TCP / TLS)", f"{host}:{port}: {detail}")
         yield {"done": True, "ok": False, "detail": f"Could not connect to {host}:{port}"}
         return
 
@@ -105,8 +108,9 @@ async def test_stream(provider: Provider, db: DbSession) -> AsyncIterator[dict[s
     try:
         llm = await build_provider(provider, db, model)
     except Exception as exc:  # noqa: BLE001
-        yield _step("auth", "error", "Authenticate", str(exc))
-        yield {"done": True, "ok": False, "detail": str(exc)}
+        detail = log_and_describe(exc, "diagnostics: provider build failed")
+        yield _step("auth", "error", "Authenticate", detail)
+        yield {"done": True, "ok": False, "detail": detail}
         return
 
     auth_ok = False
@@ -132,10 +136,12 @@ async def test_stream(provider: Provider, db: DbSession) -> AsyncIterator[dict[s
                 yield _step("first_token", "ok", "Receive first token", sample or "ok")
                 break
     except Exception as exc:  # noqa: BLE001
-        msg = str(exc)
-        phase = "auth" if "401" in msg or "403" in msg or "key" in msg.lower() else "request"
-        yield _step(phase, "error", "Authenticate" if phase == "auth" else "Send probe request", msg)
-        yield {"done": True, "ok": False, "detail": msg}
+        raw = str(exc)
+        # `raw` only classifies the failure locally; it is never sent to the client.
+        phase = "auth" if "401" in raw or "403" in raw or "key" in raw.lower() else "request"
+        detail = log_and_describe(exc, "diagnostics: probe request failed")
+        yield _step(phase, "error", "Authenticate" if phase == "auth" else "Send probe request", detail)
+        yield {"done": True, "ok": False, "detail": detail}
         return
 
     if not got_token:
@@ -152,7 +158,8 @@ async def models_stream(provider: Provider, db: DbSession) -> AsyncIterator[dict
         addrs = await _dns(host)
         yield _step("endpoint", "ok", "Resolve endpoint (DNS)", f"{host} → {', '.join(addrs[:3])}")
     except Exception as exc:  # noqa: BLE001
-        yield _step("endpoint", "error", "Resolve endpoint (DNS)", f"{host}: {exc}")
+        detail = log_and_describe(exc, f"diagnostics: DNS failed for {host}")
+        yield _step("endpoint", "error", "Resolve endpoint (DNS)", f"{host}: {detail}")
         yield {"done": True, "ok": False, "detail": f"DNS failed for {host}", "models": []}
         return
 
@@ -160,7 +167,8 @@ async def models_stream(provider: Provider, db: DbSession) -> AsyncIterator[dict
         await _tcp_connect(host, port)
         yield _step("connect", "ok", "Connect (TCP / TLS)", f"{host}:{port}")
     except Exception as exc:  # noqa: BLE001
-        yield _step("connect", "error", "Connect (TCP / TLS)", f"{host}:{port}: {exc}")
+        detail = log_and_describe(exc, f"diagnostics: TCP connect failed for {host}:{port}")
+        yield _step("connect", "error", "Connect (TCP / TLS)", f"{host}:{port}: {detail}")
         yield {"done": True, "ok": False, "detail": "Could not connect", "models": []}
         return
 
@@ -171,5 +179,6 @@ async def models_stream(provider: Provider, db: DbSession) -> AsyncIterator[dict
         yield _step("complete", "ok", "Complete", "")
         yield {"done": True, "ok": True, "detail": f"{len(models)} models", "models": models}
     except Exception as exc:  # noqa: BLE001
-        yield _step("fetch", "error", "Fetch model catalogue", str(exc))
-        yield {"done": True, "ok": False, "detail": str(exc), "models": []}
+        detail = log_and_describe(exc, "diagnostics: model catalogue fetch failed")
+        yield _step("fetch", "error", "Fetch model catalogue", detail)
+        yield {"done": True, "ok": False, "detail": detail, "models": []}

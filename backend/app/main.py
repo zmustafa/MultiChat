@@ -206,7 +206,7 @@ def _reconnect_integrations() -> None:
     """Re-establish saved integration connections (e.g. Work IQ) in the background."""
     import asyncio
 
-    from .mcp.workiq import workiq
+    from .mcp.workiq import DEFAULT_ARGS, DEFAULT_COMMAND, workiq
     from .models import Integration
 
     db = SessionLocal()
@@ -216,8 +216,10 @@ def _reconnect_integrations() -> None:
         ).first()
         if not row:
             return
-        command = row.command
-        args = list(row.args_json or [])
+        # The launch command is fixed in code, not read from the row — a restored backup
+        # must not be able to change what process the server spawns.
+        command = DEFAULT_COMMAND
+        args = list(DEFAULT_ARGS)
         # Seed persisted EULA acceptance so connect() can auto-replay it and the model
         # is never asked to accept again.
         workiq.eula_accepted = bool(row.eula_accepted)

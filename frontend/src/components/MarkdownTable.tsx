@@ -228,7 +228,10 @@ export function MarkdownTable({ children }: { children?: React.ReactNode }) {
 
   /** Copy the current (sorted/filtered) view as a GFM markdown table. */
   async function copyMarkdown() {
-    const esc = (t: string) => t.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+    // Escape backslashes first so an existing "\" can't consume the escape we add to a
+    // following pipe (which would leave an unescaped cell separator).
+    const esc = (t: string) =>
+      t.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
     const head = `| ${headers.map((h) => esc(h.text)).join(" | ")} |`;
     const sep = `| ${headers.map(() => "---").join(" | ")} |`;
     const body = view

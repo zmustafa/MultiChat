@@ -43,7 +43,9 @@ export function delimitedToMarkdown(text: string): string | null {
     const consistent = rows.filter((r) => r.length === cols).length;
     if (consistent < rows.length) continue; // require strict column alignment
 
-    const esc = (c: string) => c.replace(/\|/g, "\\|");
+    // Escape backslashes first, otherwise an existing "\" would turn a following cell
+    // pipe into an escaped-backslash + unescaped pipe and break the table.
+    const esc = (c: string) => c.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
     const header = rows[0];
     const body = rows.slice(1);
     return [

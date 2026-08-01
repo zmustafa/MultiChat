@@ -6,16 +6,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
 from ..db import get_db
+from ..errors import log_and_describe
 from ..mcp.workiq import DEFAULT_ARGS, DEFAULT_COMMAND, EULA_URL, workiq
 from ..models import Integration, User
 from ..security import current_user
 
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
-
-
-class WorkIqConnectIn(BaseModel):
-    command: str | None = None
-    args: list[str] | None = None
 
 
 class WorkIqTestIn(BaseModel):
@@ -68,16 +64,19 @@ async def workiq_accept_eula(
 
 @router.post("/workiq/connect")
 async def workiq_connect(
-    payload: WorkIqConnectIn,
     user: User = Depends(current_user),
     db: DbSession = Depends(get_db),
 ) -> dict:
-    command = payload.command or DEFAULT_COMMAND
-    args = payload.args if payload.args is not None else list(DEFAULT_ARGS)
+    # The launch command is fixed server-side — it is never taken from the request, so no
+    # caller can turn this endpoint into arbitrary process execution.
+    command = DEFAULT_COMMAND
+    args = list(DEFAULT_ARGS)
     try:
         status = await workiq.connect(command, args)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=str(exc) or type(exc).__name__)
+        raise HTTPException(
+            status_code=502, detail=log_and_describe(exc, "Work IQ connect failed")
+        ) from exc
     # Persist so it can auto-reconnect on restart.
     row = _get_row(db, user)
     if row is None:

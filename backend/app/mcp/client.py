@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,30 @@ from typing import Any
 
 class McpError(Exception):
     pass
+
+
+# MCP servers may only be launched through one of these package runners / interpreters, and
+# every argument must be a single shell-safe token. On Windows the launcher is invoked via
+# COMSPEC (`cmd.exe /c`) to resolve .cmd shims, where metacharacters such as & | > ^ would
+# otherwise be interpreted, so this is enforced on every platform.
+_ALLOWED_COMMANDS = frozenset(
+    {"npx", "npm", "node", "uv", "uvx", "python", "python3", "deno", "bunx", "docker"}
+)
+_SAFE_ARG_RE = re.compile(r"^[A-Za-z0-9@._:/\\+=,~-]+$")
+
+
+def _check_command(command: str, args: list[str]) -> None:
+    """Reject anything that isn't an allowlisted launcher with plain-token arguments."""
+    name = os.path.basename(command).lower()
+    root = name.rsplit(".", 1)[0] if name.endswith((".exe", ".cmd", ".bat")) else name
+    if root not in _ALLOWED_COMMANDS:
+        raise McpError(
+            f"Refusing to launch '{command}': not an allowed MCP server command "
+            f"({', '.join(sorted(_ALLOWED_COMMANDS))})."
+        )
+    for arg in args:
+        if not isinstance(arg, str) or not _SAFE_ARG_RE.match(arg):
+            raise McpError(f"Refusing to launch '{command}': unsafe argument {arg!r}.")
 
 
 class McpStdioClient:
@@ -43,6 +68,7 @@ class McpStdioClient:
     async def start(self, init_timeout: float = 60.0) -> dict:
         """Spawn the server and perform the MCP initialize handshake."""
         self._loop = asyncio.get_event_loop()
+        _check_command(self.command, list(self.args))
         exe = shutil.which(self.command) or self.command
         args = list(self.args)
         # On Windows npx/npm resolve to .cmd shims — run them through the shell.

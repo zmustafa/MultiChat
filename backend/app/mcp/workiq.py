@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import re
 
+from ..errors import log_and_describe
 from .client import McpStdioClient, tool_result_to_text
 
 # Default command to launch the Work IQ MCP server.
@@ -157,7 +158,10 @@ class WorkIqManager:
             result = await self._client.call_tool(mcp_name, arguments)
             return tool_result_to_text(result) or "(no content)"
         except Exception as exc:  # noqa: BLE001
-            return f"[Work IQ error] {exc}"
+            # The full error (with traceback) goes to the server log; the caller — which may
+            # be an HTTP response or a model prompt — only gets a safe summary.
+            detail = log_and_describe(exc, f"Work IQ tool call failed: {mcp_name}")
+            return f"[Work IQ error] {detail}"
 
 
 # Process-wide singleton (single-user self-hosted).

@@ -881,15 +881,25 @@ _RUN_FILE_MAX_AGE = 3600  # startup sweep deletes run buffers older than this (c
 _hubs: dict[tuple[str, str], "_RunHub"] = {}
 
 
+# Run-buffer file names are built from ids that ultimately come from a request, so anything
+# outside this character set is replaced before the name is used as a path component.
+_RUN_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
+
+
 def _run_file_path(session_id: str, turn_id: str) -> str:
-    safe = f"{session_id}__{turn_id}".replace("/", "_").replace("\\", "_")
-    return os.path.join(_RUNS_DIR, f"{safe}.ndjson")
+    """Absolute path of a run's NDJSON buffer, constrained to the runs directory."""
+    safe = _RUN_NAME_UNSAFE.sub("_", f"{session_id}__{turn_id}")[:200]
+    root = os.path.realpath(_RUNS_DIR)
+    path = os.path.realpath(os.path.join(root, f"{safe}.ndjson"))
+    if not path.startswith(root + os.sep):
+        raise ValueError("invalid run buffer path")
+    return path
 
 
 def _delete_run_file(session_id: str, turn_id: str) -> None:
     try:
         os.remove(_run_file_path(session_id, turn_id))
-    except OSError:
+    except (OSError, ValueError):
         pass
 
 
@@ -991,7 +1001,10 @@ async def resume_stream(session_id: str, turn_id: str) -> AsyncIterator[str]:
     # No live hub (most likely the backend restarted mid-run) — replay the persisted buffer
     # if one exists. The run itself is gone, so this yields the captured partial then closes;
     # the client's reconcile/poll + the persisted DB message take over from there.
-    path = _run_file_path(session_id, turn_id)
+    try:
+        path = _run_file_path(session_id, turn_id)
+    except ValueError:
+        return
     if not os.path.exists(path):
         return
     try:

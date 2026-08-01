@@ -37,6 +37,21 @@ def _safe_download_name(name: str | None, fallback: str) -> str:
     return cleaned or fallback
 
 
+def _generated_path(filename: str) -> str:
+    """Resolve a stored file name to an absolute path inside the generated-files directory.
+
+    The name must match `<uuid hex>.<ext>` exactly, and the resolved path (symlinks
+    included) must stay under the generated directory. Anything else is a 404.
+    """
+    if not _NAME_RE.fullmatch(filename):
+        raise HTTPException(status_code=404, detail="File not found")
+    root = os.path.realpath(os.path.join(settings.UPLOAD_DIR, GENERATED_SUBDIR))
+    path = os.path.realpath(os.path.join(root, filename))
+    if path != root and not path.startswith(root + os.sep):
+        raise HTTPException(status_code=404, detail="File not found")
+    return path
+
+
 @router.get("/{filename}")
 def get_generated_file(
     filename: str,
@@ -48,9 +63,7 @@ def get_generated_file(
     attach a Bearer token). File names are unguessable UUID hex + a fixed extension, and
     are validated to prevent path traversal.
     """
-    if not _NAME_RE.match(filename):
-        raise HTTPException(status_code=404, detail="File not found")
-    path = os.path.join(settings.UPLOAD_DIR, GENERATED_SUBDIR, filename)
+    path = _generated_path(filename)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="File not found")
     ext = filename.rsplit(".", 1)[1]
@@ -103,15 +116,13 @@ def delete_generated_file(
     user: User = Depends(current_user),
     db: DbSession = Depends(get_db),
 ) -> dict:
-    if not _NAME_RE.match(filename):
-        raise HTTPException(status_code=404, detail="File not found")
+    path = _generated_path(filename)
     row = db.scalar(
         select(GeneratedFile).where(
             GeneratedFile.stored_name == filename,
             GeneratedFile.user_id == user.id,
         )
     )
-    path = os.path.join(settings.UPLOAD_DIR, GENERATED_SUBDIR, filename)
     if row is None and not os.path.exists(path):
         raise HTTPException(status_code=404, detail="File not found")
     try:

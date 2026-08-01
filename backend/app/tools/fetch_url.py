@@ -9,12 +9,22 @@ from .ssrf import is_safe_url
 
 MAX_BYTES = 2 * 1024 * 1024  # 2 MB
 
+# Strip raw <script>/<style> bodies and comments before dropping the remaining tags.
+# Each pattern tolerates attributes, arbitrary whitespace before the closing ">", and an
+# unterminated element at end of input, so a crafted page can't smuggle script text
+# through into the extracted plain text.
+_COMMENT_RE = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
+_SCRIPT_RE = re.compile(r"<script\b[^>]*>.*?(?:</script[^>]*>|\Z)", re.IGNORECASE | re.DOTALL)
+_STYLE_RE = re.compile(r"<style\b[^>]*>.*?(?:</style[^>]*>|\Z)", re.IGNORECASE | re.DOTALL)
+_TAG_RE = re.compile(r"<[^>]*>|<[^>]*\Z")
+
 
 def _sanitize(html: str) -> str:
-    # strip scripts/styles then tags
-    html = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.IGNORECASE)
-    html = re.sub(r"<style[\s\S]*?</style>", " ", html, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", " ", html)
+    # strip comments, scripts and styles (content included), then the remaining tags
+    html = _COMMENT_RE.sub(" ", html)
+    html = _SCRIPT_RE.sub(" ", html)
+    html = _STYLE_RE.sub(" ", html)
+    text = _TAG_RE.sub(" ", html)
     text = re.sub(r"&nbsp;", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()

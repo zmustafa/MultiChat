@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session as DbSession
 
 from ..crypto import decrypt, encrypt, mask_secret
 from ..db import get_db
+from ..errors import log_and_describe
 from ..models import Provider, User
 from ..providers import diagnostics, oauth
 from ..providers.registry import build_provider
@@ -196,7 +197,14 @@ async def test_stream(
                 else:
                     yield _sse("step", item)
         except Exception as exc:  # noqa: BLE001
-            yield _sse("done", {"done": True, "ok": False, "detail": str(exc)})
+            yield _sse(
+                "done",
+                {
+                    "done": True,
+                    "ok": False,
+                    "detail": log_and_describe(exc, "provider test stream failed"),
+                },
+            )
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -219,7 +227,15 @@ async def models_stream(
                 else:
                     yield _sse("step", item)
         except Exception as exc:  # noqa: BLE001
-            yield _sse("done", {"done": True, "ok": False, "detail": str(exc), "models": []})
+            yield _sse(
+                "done",
+                {
+                    "done": True,
+                    "ok": False,
+                    "detail": log_and_describe(exc, "provider models stream failed"),
+                    "models": [],
+                },
+            )
             return
         # Persist the refreshed catalogue.
         if final_models:
