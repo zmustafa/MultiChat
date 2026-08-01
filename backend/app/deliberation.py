@@ -234,6 +234,36 @@ def is_running(run_id: str) -> bool:
     return bool(task and not task.done())
 
 
+#: Statuses from which a run can never make further progress on its own.
+TERMINAL_STATUSES = frozenset({"converged", "no_consensus", "stopped", "failed"})
+
+
+def _finished_frame(run_id: str) -> str | None:
+    """A ``delib_done`` frame rebuilt from the database, or None if the run is unfinished.
+
+    Used to answer a reconnect for a run whose in-memory hub is gone, so the client
+    still learns the outcome instead of the run being started over.
+    """
+    db = SessionLocal()
+    try:
+        run = db.get(DeliberationRun, run_id)
+        if run is None or run.status not in TERMINAL_STATUSES:
+            return None
+        return _sse_step(
+            "delib_done",
+            {
+                "run_id": run.id,
+                "status": run.status,
+                "rounds_used": run.rounds_used,
+                "converged": bool(run.converged),
+                "total_calls": run.total_calls,
+                "wall_ms": run.wall_ms,
+            },
+        )
+    finally:
+        db.close()
+
+
 def request_stop(run_id: str) -> bool:
     """Ask a running deliberation to wind up at the next safe point."""
     event = _cancels.get(run_id)
@@ -250,6 +280,17 @@ def start_run(run_id: str) -> _Hub:
         return hub
     if hub and hub.done:
         return hub
+    # No live hub — but that only means nothing is running *in this process*. The registry
+    # is in-memory, so it is also empty after a restart or once the TTL sweep has run. A
+    # run that already reached a terminal state must never be re-driven: doing so would
+    # overwrite its stored verdict with a fresh (and possibly failed) one.
+    finished = _finished_frame(run_id)
+    if finished is not None:
+        replay = _Hub()
+        replay.publish(finished)
+        replay.finish()
+        # Deliberately not registered in _hubs: it is a throwaway with no cleanup task.
+        return replay
     hub = _Hub()
     _hubs[run_id] = hub
     _cancels[run_id] = asyncio.Event()

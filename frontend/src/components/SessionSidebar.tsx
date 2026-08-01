@@ -303,6 +303,40 @@ export function SessionSidebar({
           </div>
         ) : (
           <>
+            {/* Deliberations sit above the chat list: there are only ever a handful, and a
+                long chat history would otherwise push them far below the fold. */}
+            {deliberations.length > 0 && (
+              <div className="border-b border-gray-200 pb-1 dark:border-gray-800">
+                <button
+                  onClick={() => setShowDeliberations((v) => !v)}
+                  className="flex w-full items-center px-3 pt-2 text-[10px] font-semibold uppercase tracking-wide text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                >
+                  ⚖️ Deliberations ({deliberations.length}){" "}
+                  <span className="ml-1">{showDeliberations ? "▾" : "▸"}</span>
+                </button>
+                {showDeliberations &&
+                  deliberations.map((d) => (
+                    <button
+                      key={d.id}
+                      onClick={() => navigate(`/d/${d.id}`)}
+                      className="block w-full px-3 py-1.5 text-left hover:bg-gray-100 dark:hover:bg-gray-800"
+                      title={d.prompt}
+                    >
+                      <span className="block truncate text-sm text-gray-700 dark:text-gray-200">
+                        {d.prompt || "Deliberation"}
+                      </span>
+                      <span className="block truncate text-[11px] text-gray-400">
+                        {relTime(d.created_at)} ·{" "}
+                        {d.status === "running" || d.status === "pending"
+                          ? "running…"
+                          : d.converged
+                            ? "converged"
+                            : d.status.replace("_", " ")}
+                      </span>
+                    </button>
+                  ))}
+              </div>
+            )}
             {renderGroup(
               "Pinned",
               sessions.filter((s) => s.pinned && !s.archived && !s.trashed)
@@ -391,38 +425,6 @@ export function SessionSidebar({
             </div>
             {sessions.length === 0 && (
               <div className="p-3 text-xs text-gray-500">No topics yet.</div>
-            )}
-            {deliberations.length > 0 && (
-              <div className="border-t border-gray-200 dark:border-gray-800">
-                <button
-                  onClick={() => setShowDeliberations((v) => !v)}
-                  className="flex w-full items-center px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                >
-                  ⚖️ Deliberations ({deliberations.length}){" "}
-                  <span className="ml-1">{showDeliberations ? "▾" : "▸"}</span>
-                </button>
-                {showDeliberations &&
-                  deliberations.map((d) => (
-                    <button
-                      key={d.id}
-                      onClick={() => navigate(`/d/${d.id}`)}
-                      className="block w-full px-3 py-1.5 text-left hover:bg-gray-100 dark:hover:bg-gray-800"
-                      title={d.prompt}
-                    >
-                      <span className="block truncate text-sm text-gray-700 dark:text-gray-200">
-                        {d.prompt || "Deliberation"}
-                      </span>
-                      <span className="block truncate text-[11px] text-gray-400">
-                        {relTime(d.created_at)} ·{" "}
-                        {d.status === "running" || d.status === "pending"
-                          ? "running…"
-                          : d.converged
-                            ? "converged"
-                            : d.status.replace("_", " ")}
-                      </span>
-                    </button>
-                  ))}
-              </div>
             )}
           </>
         )}

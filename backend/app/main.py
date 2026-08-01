@@ -187,6 +187,33 @@ def _reset_orphaned_lanes() -> None:
         db.close()
 
 
+def _reset_orphaned_deliberations() -> None:
+    """Fail deliberation runs left mid-flight by a crash or reload.
+
+    A run's in-memory driver dies with the process, so a run still marked
+    'pending'/'running' at startup can never make progress — without this it would
+    render as "running…" in the sidebar forever.
+    """
+    from sqlalchemy import select
+
+    from .models import DeliberationRun
+
+    db = SessionLocal()
+    try:
+        rows = db.scalars(
+            select(DeliberationRun).where(
+                DeliberationRun.status.in_(["pending", "running"])
+            )
+        ).all()
+        for r in rows:
+            r.status = "failed"
+            r.error = r.error or "Interrupted by a server restart."
+        if rows:
+            db.commit()
+    finally:
+        db.close()
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     # import models so metadata is populated before create_all
@@ -199,6 +226,7 @@ def on_startup() -> None:
     _seed_snippets()
     _cleanup_generated()
     _reset_orphaned_lanes()
+    _reset_orphaned_deliberations()
     _reconnect_integrations()
     from .broadcast import _sweep_stale_run_files
 
