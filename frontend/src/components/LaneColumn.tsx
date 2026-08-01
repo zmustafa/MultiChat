@@ -7,6 +7,7 @@ import { isLaneCollapsed, setLaneCollapsedState } from "../utils/laneCollapse";
 import { contentBadges } from "../utils/contentMeta";
 import type { QueuedMessage } from "./LaneComposer";
 import { MessageRenderer, CodeFoldContext } from "./MessageRenderer";
+import { downloadMessagePdf } from "../utils/messagePdf";
 import { ToolCallCard } from "./ToolCallCard";
 
 interface Props {
@@ -71,17 +72,82 @@ function CheckIcon() {
   );
 }
 
+function DownloadIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <path d="M7 10l5 5 5-5" />
+      <path d="M12 15V3" />
+    </svg>
+  );
+}
+
+/** Download just this response as a US Letter PDF (diagrams, code and tables included). */
+function DownloadPdfButton({ onDownload }: { onDownload: () => Promise<void> }) {
+  const [state, setState] = useState<"idle" | "busy" | "done" | "error">("idle");
+  const [error, setError] = useState("");
+  return (
+    <button
+      onClick={async () => {
+        if (state === "busy") return;
+        setState("busy");
+        setError("");
+        try {
+          await onDownload();
+          setState("done");
+          setTimeout(() => setState("idle"), 1800);
+        } catch (e) {
+          setError((e as Error).message);
+          setState("error");
+          setTimeout(() => setState("idle"), 3500);
+        }
+      }}
+      disabled={state === "busy"}
+      title={
+        state === "error"
+          ? `PDF export failed: ${error}`
+          : "Download this response as a PDF"
+      }
+      className={`flex items-center gap-1 rounded px-1.5 py-1 text-[10px] font-medium transition hover:bg-gray-100 hover:text-gray-700 disabled:cursor-wait dark:hover:bg-gray-800 dark:hover:text-gray-200 ${
+        state === "error" ? "text-red-500" : ""
+      }`}
+    >
+      {state === "busy" ? (
+        <svg className="animate-spin" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2">
+          <circle cx="12" cy="12" r="9" strokeOpacity="0.25" />
+          <path d="M21 12a9 9 0 0 0-9-9" strokeLinecap="round" />
+        </svg>
+      ) : state === "done" ? (
+        <CheckIcon />
+      ) : (
+        <DownloadIcon />
+      )}
+      <span>
+        {state === "busy"
+          ? "Building…"
+          : state === "done"
+            ? "Saved"
+            : state === "error"
+              ? "Failed"
+              : "PDF"}
+      </span>
+    </button>
+  );
+}
+
 /** Small icon action button shown at the bottom of a response. */
 function ResponseActions({
   content,
   onRegenerate,
   regenerateDisabled,
   onPin,
+  onDownloadPdf,
 }: {
   content: string;
   onRegenerate?: () => void;
   regenerateDisabled?: boolean;
   onPin?: () => void;
+  onDownloadPdf?: () => Promise<void>;
 }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -116,6 +182,7 @@ function ResponseActions({
           <RegenIcon />
         </button>
       )}
+      {onDownloadPdf && <DownloadPdfButton onDownload={onDownloadPdf} />}
     </div>
   );
 }
@@ -582,6 +649,8 @@ export function LaneColumn({
   // message (new turn) always resets it so the next response follows again.
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  // Rendered DOM per persisted message, so a PDF export can grab that message's diagrams.
+  const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const stickToBottom = useRef(true);
   const prevScrollTop = useRef(0);
   const programmaticScroll = useRef(false);
@@ -923,7 +992,12 @@ export function LaneColumn({
                     </div>
                   )}
                   {!liveHere && m && (
-                    <div className="group">
+                    <div
+                      className="group"
+                      ref={(el) => {
+                        messageRefs.current[m.id] = el;
+                      }}
+                    >
                       <div className="flex items-center justify-between">
                         <span className="flex min-w-0 items-center gap-1">
                           <span className="truncate text-[10px] font-semibold uppercase tracking-wide text-gray-400">
@@ -974,6 +1048,13 @@ export function LaneColumn({
                                 : undefined
                             }
                             onPin={onPinTurn ? () => onPinTurn(turn.id) : undefined}
+                            onDownloadPdf={() =>
+                              downloadMessagePdf(
+                                lane.session_id,
+                                m.id,
+                                messageRefs.current[m.id] ?? null,
+                              )
+                            }
                             regenerateDisabled={
                               status === "streaming" || status === "queued"
                             }

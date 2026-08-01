@@ -154,6 +154,62 @@ function svgToPngBlob(svgEl: SVGSVGElement, scale?: number): Promise<Blob> {
 
 /** Replace <foreignObject> HTML labels with native SVG <text> so the SVG can be
  *  rasterized to a canvas without tainting it. Uses the live element to read the
+/** Rasterize a rendered mermaid <svg> to a PNG data URL plus the diagram's natural size.
+ *  Used by the per-message PDF export so the document shows the very diagram on screen. */
+export async function svgToPngDataUrl(
+  svgEl: SVGSVGElement,
+): Promise<{ image: string; width: number; height: number }> {
+  const blob = await svgToPngBlob(svgEl);
+  const vb = svgEl.viewBox?.baseVal;
+  const rect = svgEl.getBoundingClientRect();
+  const image = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("could not read diagram image"));
+    reader.readAsDataURL(blob);
+  });
+  return {
+    image,
+    width: (vb && vb.width) || rect.width || 800,
+    height: (vb && vb.height) || rect.height || 600,
+  };
+}
+
+/** Read an HTML diagram label as display lines. `textContent` would glue the pieces of a
+ *  `a<br/>b` label into "ab", so walk the markup and break on <br> / block elements. */
+function htmlLabelLines(root: Element): string[] {
+  const lines: string[] = [];
+  let current = "";
+  const flush = () => {
+    lines.push(current.trim());
+    current = "";
+  };
+  const walk = (node: Node) => {
+    for (const child of Array.from(node.childNodes)) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        current += child.textContent || "";
+        continue;
+      }
+      if (child.nodeType !== Node.ELEMENT_NODE) continue;
+      const tag = (child as Element).tagName.toLowerCase();
+      if (tag === "br") {
+        flush();
+      } else if (tag === "p" || tag === "div") {
+        flush();
+        walk(child);
+        flush();
+      } else {
+        walk(child);
+      }
+    }
+  };
+  walk(root);
+  flush();
+  return lines.filter(Boolean);
+}
+
+/** Replace <foreignObject> HTML labels with native SVG <text> so the SVG can be
+ *  rasterized to a canvas without tainting it. Uses the live element to read the
  *  rendered text color/size for a faithful copy. */
 function flattenForeignObjects(clone: SVGSVGElement, live: SVGSVGElement) {
   const cloneFos = Array.from(clone.querySelectorAll("foreignObject"));
@@ -165,7 +221,7 @@ function flattenForeignObjects(clone: SVGSVGElement, live: SVGSVGElement) {
     const y = parseFloat(fo.getAttribute("y") || "0");
     const liveSpan = liveFos[i]?.querySelector("span, div, p") as HTMLElement | null;
     const style = liveSpan ? getComputedStyle(liveSpan) : null;
-    const lines = (fo.textContent || "").split("\n").map((s) => s.trim()).filter(Boolean);
+    const lines = htmlLabelLines(fo);
     const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
     text.setAttribute("x", String(x + w / 2));
     text.setAttribute("y", String(y + h / 2));
@@ -310,7 +366,10 @@ export function Mermaid({ code }: { code: string }) {
 
   return (
     <>
-      <div className="group relative my-2 flex justify-center overflow-x-auto rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-700 dark:bg-gray-900">
+      <div
+        data-mermaid-code={code}
+        className="group relative my-2 flex justify-center overflow-x-auto rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-700 dark:bg-gray-900"
+      >
         <div className="absolute right-1 top-1 z-10 flex gap-1 opacity-0 transition group-hover:opacity-100">
           <button
             type="button"

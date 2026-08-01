@@ -110,6 +110,7 @@ def _export_pdf(db, session, path) -> None:
         path, pagesize=LETTER, topMargin=0.8 * inch, bottomMargin=0.8 * inch,
         leftMargin=0.8 * inch, rightMargin=0.8 * inch, title=session.title or "Comparison",
     )
+    content_width = doc.width
     story: list = [Paragraph(escape(session.title or "Comparison"), title_style), Spacer(1, 8)]
     for i, turn in enumerate(turns, 1):
         story.append(Paragraph(f"Turn {i}", turn_style))
@@ -119,7 +120,7 @@ def _export_pdf(db, session, path) -> None:
             if not msg or not msg.content:
                 continue
             story.append(Paragraph(escape(lane_label(lane)), lane_style))
-            story.extend(markdown_pdf_flowables(msg.content, body))
+            story.extend(markdown_pdf_flowables(msg.content, body, content_width=content_width))
     doc.build(story)
 
 
@@ -140,3 +141,209 @@ def export_session(db: DbSession, session: ChatSession, fmt: str):
     builder(db, session, path)
     download_name = safe_download_name(session.title or "comparison", fmt, fallback="comparison")
     return stored_name, download_name, _MIME.get(fmt, "application/octet-stream")
+
+
+# ---------------------------------------------------------------------------
+# Single answer export ("download this response as a PDF")
+# ---------------------------------------------------------------------------
+
+_PAGE_MARGIN = 54.0  # 0.75in — US Letter
+
+
+def _numbered_canvas(footer_left: str, font: str):
+    """Canvas subclass that stamps a rule + "Page X of Y" footer on every page.
+
+    Page count is only known once the whole story is laid out, so pages are buffered and
+    replayed on save.
+    """
+    from reportlab.lib.colors import HexColor
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.pdfgen import canvas as pdf_canvas
+
+    class NumberedCanvas(pdf_canvas.Canvas):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._pages: list[dict] = []
+
+        def showPage(self):  # noqa: N802 — reportlab API
+            self._pages.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total = len(self._pages)
+            for state in self._pages:
+                self.__dict__.update(state)
+                self._stamp(total)
+                super().showPage()
+            super().save()
+
+        def _stamp(self, total: int) -> None:
+            width, _ = LETTER
+            self.saveState()
+            self.setStrokeColor(HexColor("#E2E8F0"))
+            self.setLineWidth(0.5)
+            self.line(_PAGE_MARGIN, 44, width - _PAGE_MARGIN, 44)
+            self.setFont(font, 7.5)
+            self.setFillColor(HexColor("#94A3B8"))
+            self.drawString(_PAGE_MARGIN, 32, footer_left[:110])
+            self.drawRightString(
+                width - _PAGE_MARGIN, 32, f"Page {self._pageNumber} of {total}"
+            )
+            self.restoreState()
+
+    return NumberedCanvas
+
+
+def _accent_card(text_flowables: list, width: float, bg: str, accent: str):
+    """A tinted block with a coloured bar down its left edge."""
+    from reportlab.lib import colors
+    from reportlab.platypus import Table, TableStyle
+
+    tbl = Table([["", text_flowables]], colWidths=[3.5, width - 3.5], hAlign="LEFT")
+    tbl.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (0, 0), colors.HexColor(accent)),
+                ("BACKGROUND", (1, 0), (1, 0), colors.HexColor(bg)),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (0, 0), 0),
+                ("RIGHTPADDING", (0, 0), (0, 0), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ("LEFTPADDING", (1, 0), (1, 0), 10),
+                ("RIGHTPADDING", (1, 0), (1, 0), 10),
+                ("TOPPADDING", (1, 0), (1, 0), 8),
+                ("BOTTOMPADDING", (1, 0), (1, 0), 8),
+            ]
+        )
+    )
+    return tbl
+
+
+def _answer_meta(message: LaneMessage) -> str:
+    bits: list[str] = []
+    if message.latency_ms is not None:
+        bits.append(f"{message.latency_ms / 1000:.1f} s")
+    if message.ttft_ms is not None:
+        bits.append(f"{message.ttft_ms / 1000:.1f} s to first token")
+    usage = message.usage_json or {}
+    tokens = usage.get("completion_tokens")
+    if tokens:
+        bits.append(f"{tokens} tokens")
+        if message.latency_ms:
+            bits.append(f"{tokens / (message.latency_ms / 1000):.1f} tok/s")
+    return "  \u00b7  ".join(bits)
+
+
+def export_message_pdf(
+    db: DbSession,
+    session: ChatSession,
+    message: LaneMessage,
+    diagrams: list[dict] | None = None,
+) -> tuple[str, str, str]:
+    """Export ONE lane answer as a standalone US Letter PDF.
+
+    ``diagrams`` carries images the chat UI already rendered for ```mermaid``` fences, so
+    the document shows the same diagrams the user is looking at.
+
+    Returns (stored_name, download_name, mime_type).
+    """
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    from reportlab.platypus.flowables import HRFlowable
+
+    from .markdown_render import markdown_pdf_flowables, pdf_fonts, pdf_safe
+
+    fonts = pdf_fonts()
+    lane = message.lane
+    turn = message.turn
+    provider = db.get(Provider, lane.provider_id) if lane and lane.provider_id else None
+    model = (lane.model if lane else "") or "assistant"
+    provider_name = provider.name if provider else "provider"
+    title = session.title or "Chat response"
+
+    styles = getSampleStyleSheet()
+    base = ParagraphStyle(
+        "Base", parent=styles["BodyText"], fontName=fonts["body"], fontSize=10,
+        leading=14.5, spaceAfter=6, textColor=colors.HexColor("#111827"),
+    )
+    brand_style = ParagraphStyle(
+        "Brand", parent=base, fontName=fonts["bold"], fontSize=8, leading=10,
+        textColor=colors.HexColor("#6366F1"), spaceAfter=2,
+    )
+    title_style = ParagraphStyle(
+        "Title", parent=base, fontName=fonts["bold"], fontSize=19, leading=23,
+        textColor=colors.HexColor("#1E1B4B"), spaceAfter=3,
+    )
+    meta_style = ParagraphStyle(
+        "Meta", parent=base, fontSize=8.5, leading=12,
+        textColor=colors.HexColor("#64748B"), spaceAfter=2,
+    )
+    label_style = ParagraphStyle(
+        "Label", parent=base, fontName=fonts["bold"], fontSize=7.5, leading=10,
+        textColor=colors.HexColor("#4F46E5"), spaceAfter=3,
+    )
+    prompt_style = ParagraphStyle(
+        "PromptText", parent=base, fontSize=9.5, leading=13.5,
+        textColor=colors.HexColor("#1F2937"), spaceAfter=0,
+    )
+
+    stored_name = new_stored_name("pdf")
+    path = os.path.join(generated_dir(), stored_name)
+    doc = SimpleDocTemplate(
+        path,
+        pagesize=LETTER,
+        topMargin=0.7 * 72,
+        bottomMargin=0.85 * 72,
+        leftMargin=_PAGE_MARGIN,
+        rightMargin=_PAGE_MARGIN,
+        title=f"{title} - {model}",
+        author="MultiChat",
+        subject=f"{model} ({provider_name})",
+    )
+    width = doc.width
+
+    when = message.created_at.strftime("%d %b %Y, %H:%M UTC") if message.created_at else ""
+    meta_bits = [b for b in (model, provider_name, when) if b]
+    perf = _answer_meta(message)
+
+    story: list = [
+        Paragraph("MULTICHAT \u00b7 AI RESPONSE", brand_style),
+        Paragraph(escape(pdf_safe(title)), title_style),
+        Paragraph(escape(pdf_safe("  \u00b7  ".join(meta_bits))), meta_style),
+    ]
+    if perf:
+        story.append(Paragraph(escape(pdf_safe(perf)), meta_style))
+    story.append(Spacer(1, 12))
+
+    if turn is not None and (turn.content or "").strip():
+        prompt_text = escape(pdf_safe(turn.content.strip())).replace("\n", "<br/>")
+        story.append(
+            _accent_card(
+                [
+                    Paragraph("PROMPT", label_style),
+                    Paragraph(prompt_text, prompt_style),
+                ],
+                width,
+                bg="#EEF2FF",
+                accent="#6366F1",
+            )
+        )
+        story.append(Spacer(1, 14))
+
+    story.append(Paragraph(f"RESPONSE \u2014 {escape(pdf_safe(model))}", label_style))
+    story.append(
+        HRFlowable(width="100%", thickness=0.8, color=colors.HexColor("#C7D2FE"),
+                   spaceBefore=1, spaceAfter=8)
+    )
+    story.extend(
+        markdown_pdf_flowables(
+            message.content or "", base, diagrams=diagrams, content_width=width
+        )
+    )
+
+    doc.build(story, canvasmaker=_numbered_canvas(f"{title} \u00b7 {model}", fonts["body"]))
+    download_name = safe_download_name(f"{title}-{model}", "pdf", fallback="response")
+    return stored_name, download_name, _MIME["pdf"]

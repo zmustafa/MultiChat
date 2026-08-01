@@ -9,8 +9,11 @@ tokens with proper document formatting for each backend.
 """
 from __future__ import annotations
 
+import io
+import os
 import re
-from typing import Any
+import unicodedata
+from typing import Any, Callable, Iterable, Sequence
 from xml.sax.saxutils import escape
 
 # ---------------------------------------------------------------------------
@@ -20,11 +23,12 @@ from xml.sax.saxutils import escape
 # A block token is a tuple whose first element names its kind:
 #   ("h", level:int, text:str)
 #   ("p", text:str)
-#   ("ul", items:list[str])       ("ol", items:list[str])
-#   ("code", text:str)
+#   ("ul", items:list[str])       ("ol", items:list[str], start:int)
+#   ("code", text:str, lang:str)
 #   ("quote", text:str)
 #   ("hr",)
 #   ("table", cols:list[str], rows:list[list[str]])
+#   ("image", alt:str, src:str)
 Block = tuple
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
@@ -32,6 +36,7 @@ _HR_RE = re.compile(r"^(\*\s*){3,}$|^(-\s*){3,}$|^(_\s*){3,}$")
 _UL_RE = re.compile(r"^\s*[-*+]\s+")
 _OL_RE = re.compile(r"^\s*\d+[.)]\s+")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$")
+_IMAGE_ONLY_RE = re.compile(r'^!\[([^\]]*)\]\(\s*(\S+?)(?:\s+"[^"]*")?\s*\)$')
 
 
 def _is_block_start(line: str) -> bool:
@@ -49,6 +54,20 @@ def _is_block_start(line: str) -> bool:
     if _HR_RE.match(s):
         return True
     return False
+
+
+def _absorb_continuation(
+    lines: list[str], i: int, n: int, text: str
+) -> tuple[int, str]:
+    """Fold a list item's soft-wrapped continuation lines into its text.
+
+    A bullet whose text wraps onto the next (unmarked) source line is ONE item; without
+    this the wrapped line became a separate paragraph rendered back at the left margin.
+    """
+    while i < n and lines[i].strip() and not _is_block_start(lines[i]):
+        text = f"{text} {lines[i].strip()}".strip()
+        i += 1
+    return i, text
 
 
 def _split_row(line: str) -> list[str]:
@@ -71,13 +90,14 @@ def parse_blocks(md: str) -> list[Block]:
         # Fenced code block
         if stripped.startswith("```") or stripped.startswith("~~~"):
             fence = stripped[:3]
+            lang = stripped[3:].strip().split()[0].lower() if stripped[3:].strip() else ""
             i += 1
             code_lines: list[str] = []
             while i < n and not lines[i].strip().startswith(fence):
                 code_lines.append(lines[i])
                 i += 1
             i += 1  # skip closing fence
-            blocks.append(("code", "\n".join(code_lines)))
+            blocks.append(("code", "\n".join(code_lines), lang))
             continue
 
         if not stripped:
@@ -92,6 +112,13 @@ def parse_blocks(md: str) -> list[Block]:
 
         if _HR_RE.match(stripped):
             blocks.append(("hr",))
+            i += 1
+            continue
+
+        # A line that is nothing but an image, e.g. a chart produced by a tool.
+        m_img = _IMAGE_ONLY_RE.match(stripped)
+        if m_img:
+            blocks.append(("image", m_img.group(1), m_img.group(2)))
             i += 1
             continue
 
@@ -117,17 +144,25 @@ def parse_blocks(md: str) -> list[Block]:
         if _UL_RE.match(line):
             items: list[str] = []
             while i < n and _UL_RE.match(lines[i]):
-                items.append(re.sub(r"^\s*[-*+]\s+", "", lines[i]).strip())
+                text = re.sub(r"^\s*[-*+]\s+", "", lines[i]).strip()
                 i += 1
+                i, text = _absorb_continuation(lines, i, n, text)
+                items.append(text)
             blocks.append(("ul", items))
             continue
 
         if _OL_RE.match(line):
+            # Keep the author's numbering: a list interrupted by a paragraph continues
+            # counting instead of restarting at 1.
+            first = re.match(r"^\s*(\d+)", line)
+            start = int(first.group(1)) if first else 1
             items = []
             while i < n and _OL_RE.match(lines[i]):
-                items.append(re.sub(r"^\s*\d+[.)]\s+", "", lines[i]).strip())
+                text = re.sub(r"^\s*\d+[.)]\s+", "", lines[i]).strip()
                 i += 1
-            blocks.append(("ol", items))
+                i, text = _absorb_continuation(lines, i, n, text)
+                items.append(text)
+            blocks.append(("ol", items, start))
             continue
 
         # Paragraph: gather soft-wrapped lines until a blank line or a new block.
@@ -266,14 +301,185 @@ def render_markdown_docx(doc: Any, md: str, base_level: int = 2) -> None:
 # PDF rendering (reportlab)
 # ---------------------------------------------------------------------------
 
+# GitHub-dark palette — the same theme the chat lanes use for fenced code blocks.
+CODE_BG = "#0D1117"
+CODE_FG = "#E6EDF3"
+
+_FONTS: dict[str, str] | None = None
+_GLYPH_OK: Callable[[str], bool] | None = None
+
+# Characters LLM answers use constantly that no PDF base font can draw. Anything not
+# listed and not drawable is dropped rather than rendered as a "missing glyph" box.
+_CHAR_FALLBACKS = {
+    "\u2192": "->", "\u2190": "<-", "\u2191": "^", "\u2193": "v", "\u2194": "<->",
+    "\u21d2": "=>", "\u21d0": "<=", "\u21d4": "<=>",
+    "\u2713": "[x]", "\u2714": "[x]", "\u2705": "[x]", "\u2611": "[x]",
+    "\u2717": "[ ]", "\u2718": "[ ]", "\u274c": "[!]", "\u2b55": "( )", "\u2b1c": "[ ]",
+    "\u26a0": "!", "\u2139": "i", "\u2757": "!", "\u2753": "?",
+    "\u2605": "*", "\u2606": "*", "\u2b50": "*", "\u25cf": "\u2022", "\u25cb": "\u2022",
+    "\u25aa": "\u2022", "\u25ab": "\u2022", "\u25e6": "\u2022", "\u2023": "\u2022",
+    "\u25b6": ">", "\u25c0": "<", "\u25b2": "^", "\u25bc": "v",
+    "\u2260": "!=", "\u2248": "~", "\u221e": "inf", "\u2261": "==",
+    "\u2265": ">=", "\u2264": "<=", "\u2212": "-", "\u2044": "/",
+    "\u2500": "-", "\u2501": "-", "\u2502": "|", "\u2503": "|", "\u2550": "=", "\u2551": "|",
+    "\u250c": "+", "\u2510": "+", "\u2514": "+", "\u2518": "+", "\u251c": "+",
+    "\u2524": "+", "\u252c": "+", "\u2534": "+", "\u253c": "+",
+    "\u00a0": " ", "\u202f": " ", "\u2009": " ", "\u200b": "", "\ufe0f": "", "\u2060": "",
+}
+
+
+def _font_dirs() -> list[str]:
+    import reportlab
+
+    return [
+        "/usr/share/fonts/truetype/dejavu",
+        "/usr/share/fonts/dejavu",
+        "/usr/share/fonts/TTF",
+        "/usr/local/share/fonts",
+        "/Library/Fonts",
+        "C:/Windows/Fonts",
+        os.path.join(os.path.dirname(reportlab.__file__), "fonts"),
+    ]
+
+
+def pdf_fonts() -> dict[str, str]:
+    """Font names to use for PDF body/bold/italic/mono text.
+
+    Prefers DejaVu (broad Unicode coverage) when the host provides it, so arrows, box
+    drawing and accented text survive; otherwise falls back to the built-in Helvetica and
+    Courier, and :func:`pdf_safe` transliterates whatever the font cannot draw.
+    """
+    global _FONTS
+    if _FONTS is not None:
+        return _FONTS
+
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    fonts = {
+        "body": "Helvetica",
+        "bold": "Helvetica-Bold",
+        "italic": "Helvetica-Oblique",
+        "boldItalic": "Helvetica-BoldOblique",
+        "mono": "Courier",
+        "monoBold": "Courier-Bold",
+    }
+    dirs = _font_dirs()
+
+    def find(filename: str) -> str | None:
+        for d in dirs:
+            path = os.path.join(d, filename)
+            if os.path.exists(path):
+                return path
+        return None
+
+    def register_family(prefix: str, files: dict[str, str], keys: Sequence[str]) -> bool:
+        paths = {k: find(files[k]) for k in keys}
+        if not all(paths.values()):
+            return False
+        names = {k: f"{prefix}-{k}" for k in keys}
+        for k in keys:
+            pdfmetrics.registerFont(TTFont(names[k], paths[k]))
+        pdfmetrics.registerFontFamily(
+            names["body"],
+            normal=names["body"],
+            bold=names.get("bold", names["body"]),
+            italic=names.get("italic", names["body"]),
+            boldItalic=names.get("boldItalic", names["body"]),
+        )
+        fonts.update(names)
+        return True
+
+    try:
+        register_family(
+            "MCSans",
+            {
+                "body": "DejaVuSans.ttf",
+                "bold": "DejaVuSans-Bold.ttf",
+                "italic": "DejaVuSans-Oblique.ttf",
+                "boldItalic": "DejaVuSans-BoldOblique.ttf",
+            },
+            ("body", "bold", "italic", "boldItalic"),
+        )
+    except Exception:  # noqa: BLE001 — a broken font file must not break exporting
+        pass
+    try:
+        mono, mono_bold = find("DejaVuSansMono.ttf"), find("DejaVuSansMono-Bold.ttf")
+        if mono and mono_bold:
+            pdfmetrics.registerFont(TTFont("MCMono", mono))
+            pdfmetrics.registerFont(TTFont("MCMono-Bold", mono_bold))
+            pdfmetrics.registerFontFamily(
+                "MCMono", normal="MCMono", bold="MCMono-Bold",
+                italic="MCMono", boldItalic="MCMono-Bold",
+            )
+            fonts["mono"], fonts["monoBold"] = "MCMono", "MCMono-Bold"
+    except Exception:  # noqa: BLE001
+        pass
+
+    _FONTS = fonts
+    return fonts
+
+
+def _glyph_ok() -> Callable[[str], bool]:
+    global _GLYPH_OK
+    if _GLYPH_OK is not None:
+        return _GLYPH_OK
+
+    from reportlab.pdfbase import pdfmetrics
+
+    try:
+        face = pdfmetrics.getFont(pdf_fonts()["body"]).face
+    except Exception:  # noqa: BLE001
+        face = None
+    table = getattr(face, "charToGlyph", None)
+    if table is not None:
+        def ok(ch: str) -> bool:
+            return ord(ch) in table
+    else:
+        def ok(ch: str) -> bool:
+            try:
+                ch.encode("cp1252")
+                return True
+            except UnicodeEncodeError:
+                return False
+    _GLYPH_OK = ok
+    return ok
+
+
+def pdf_safe(text: str) -> str:
+    """Make ``text`` renderable by the active PDF font.
+
+    Characters the font cannot draw are transliterated (``->`` for an arrow, ``[x]`` for a
+    check mark, accents stripped) or dropped, so the PDF never shows missing-glyph boxes.
+    """
+    if not text:
+        return text
+    ok = _glyph_ok()
+    if all(ch in "\n\t" or ok(ch) for ch in text):
+        return text
+    out: list[str] = []
+    for ch in text:
+        if ch in "\n\t" or ok(ch):
+            out.append(ch)
+            continue
+        repl = _CHAR_FALLBACKS.get(ch)
+        if repl is None:
+            # "ā" -> "a": keep the base letter of a decomposable character.
+            repl = "".join(c for c in unicodedata.normalize("NFKD", ch) if not unicodedata.combining(c))
+            if repl == ch:
+                repl = ""
+        out.append("".join(c for c in repl if ok(c)))
+    return "".join(out)
+
 
 def _inline_pdf(text: str) -> str:
     """Convert inline Markdown to reportlab's mini-HTML markup (fully escaped)."""
+    fonts = pdf_fonts()
     out: list[str] = []
     for content, styles, href in _inline_spans(text):
-        seg = escape(content)
+        seg = escape(pdf_safe(content))
         if "code" in styles:
-            seg = f'<font face="Courier">{seg}</font>'
+            seg = f'<font face="{fonts["mono"]}" color="#B91C1C">{seg}</font>'
         if "bold" in styles:
             seg = f"<b>{seg}</b>"
         if "italic" in styles:
@@ -285,61 +491,373 @@ def _inline_pdf(text: str) -> str:
     return "".join(out)
 
 
-def markdown_pdf_flowables(md: str, body_style: Any) -> list:
-    """Return a list of reportlab flowables rendering Markdown ``md``."""
+# ---------------------------------------------------------------------------
+# Fenced code blocks: syntax highlighting
+# ---------------------------------------------------------------------------
+
+_PALETTE: dict | None = None
+
+
+def _palette() -> dict:
+    """GitHub-dark token colours keyed by Pygments token type."""
+    global _PALETTE
+    if _PALETTE is None:
+        from pygments.token import Token
+
+        _PALETTE = {
+            Token.Comment: "#8B949E",
+            Token.Keyword: "#FF7B72",
+            Token.Keyword.Type: "#FFA657",
+            Token.Operator: "#FF7B72",
+            Token.Operator.Word: "#FF7B72",
+            Token.Name: CODE_FG,
+            Token.Name.Builtin: "#79C0FF",
+            Token.Name.Builtin.Pseudo: "#79C0FF",
+            Token.Name.Function: "#D2A8FF",
+            Token.Name.Class: "#FFA657",
+            Token.Name.Namespace: "#FFA657",
+            Token.Name.Decorator: "#D2A8FF",
+            Token.Name.Tag: "#7EE787",
+            Token.Name.Attribute: "#79C0FF",
+            Token.Name.Variable: "#FFA657",
+            Token.Name.Constant: "#79C0FF",
+            Token.Literal: "#A5D6FF",
+            Token.String: "#A5D6FF",
+            Token.String.Escape: "#79C0FF",
+            Token.Number: "#79C0FF",
+            Token.Generic.Deleted: "#FFA198",
+            Token.Generic.Inserted: "#7EE787",
+            Token.Generic.Heading: "#79C0FF",
+            Token.Generic.Emph: "#E6EDF3",
+            Token.Generic.Prompt: "#8B949E",
+            Token.Error: "#FFA198",
+        }
+    return _PALETTE
+
+
+def _code_spans(code: str, lang: str) -> list[list[tuple[str, str | None]]]:
+    """Tokenize ``code`` into one list of ``(text, colour)`` spans per line."""
+    try:
+        from pygments import lex
+        from pygments.lexers import get_lexer_by_name, guess_lexer
+
+        palette = _palette()
+        try:
+            lexer = get_lexer_by_name(lang, stripnl=False, stripall=False)
+        except Exception:  # noqa: BLE001 — unknown/absent language
+            lexer = guess_lexer(code, stripnl=False) if code.strip() else None
+        if lexer is None:
+            raise ValueError("no lexer")
+
+        def colour(ttype) -> str | None:
+            t = ttype
+            while t is not None:
+                if t in palette:
+                    return palette[t]
+                t = t.parent
+            return None
+
+        lines: list[list[tuple[str, str | None]]] = [[]]
+        for ttype, value in lex(code, lexer):
+            col = colour(ttype)
+            parts = value.split("\n")
+            for idx, part in enumerate(parts):
+                if idx:
+                    lines.append([])
+                if part:
+                    lines[-1].append((part, col))
+        while lines and not lines[-1]:
+            lines.pop()
+        return lines or [[]]
+    except Exception:  # noqa: BLE001 — highlighting is best-effort
+        return [[(line, None)] for line in code.split("\n")]
+
+
+def _wrap_code_spans(
+    lines: list[list[tuple[str, str | None]]], max_chars: int
+) -> list[list[tuple[str, str | None]]]:
+    """Hard-wrap highlighted lines so long code never runs off the page."""
+    max_chars = max(20, max_chars)
+    wrapped: list[list[tuple[str, str | None]]] = []
+    for spans in lines:
+        plain = "".join(t for t, _ in spans)
+        if len(plain) <= max_chars:
+            wrapped.append(spans)
+            continue
+        colours: list[str | None] = []
+        for text, col in spans:
+            colours.extend([col] * len(text))
+        indent = len(plain) - len(plain.lstrip(" "))
+        prefix = " " * min(indent + 2, max_chars // 2)
+        pos, first = 0, True
+        while pos < len(plain):
+            avail = max(12, max_chars - (0 if first else len(prefix)))
+            chunk = plain[pos : pos + avail]
+            if pos + avail < len(plain):
+                brk = max(chunk.rfind(" "), chunk.rfind(","), chunk.rfind(";"))
+                if brk > avail * 0.55:
+                    chunk = chunk[: brk + 1]
+            row: list[tuple[str, str | None]] = []
+            if not first:
+                row.append((prefix, None))
+            for offset, ch in enumerate(chunk):
+                col = colours[pos + offset]
+                if row and row[-1][1] == col and (first or offset):
+                    row[-1] = (row[-1][0] + ch, col)
+                else:
+                    row.append((ch, col))
+            wrapped.append(row)
+            pos += len(chunk)
+            first = False
+    return wrapped
+
+
+def _code_markup(lines: Iterable[list[tuple[str, str | None]]]) -> str:
+    rows: list[str] = []
+    for spans in lines:
+        parts = []
+        for text, colour in spans:
+            seg = escape(pdf_safe(text))
+            parts.append(f'<font color="{colour}">{seg}</font>' if colour else seg)
+        rows.append("".join(parts) or " ")
+    return "\n".join(rows)
+
+
+# ---------------------------------------------------------------------------
+# Diagrams and images
+# ---------------------------------------------------------------------------
+
+
+def _diagram_card(data: bytes, max_width: float, max_height: float, natural_pt: float = 0.0):
+    """A bordered image card that shrinks to fit the space left on the page.
+
+    A plain reportlab ``Image`` that does not fit simply jumps to the next page, which for
+    a large diagram can leave most of a page blank. This flowable scales down instead —
+    but only while the result stays readable, otherwise it moves on as usual.
+    """
+    from reportlab.lib import colors
+    from reportlab.lib.utils import ImageReader
+    from reportlab.platypus import Flowable
+
+    reader = ImageReader(io.BytesIO(data))
+    px_w, px_h = reader.getSize()
+    if not px_w or not px_h:
+        return None
+    # Rasterized diagrams arrive at 2-4x, so pixel size alone would be enormous. Prefer the
+    # diagram's own layout size (scaled up a little so it reads well in print) when known.
+    target = natural_pt * 1.6 if natural_pt else max_width
+    width = max(1.0, min(max_width, target))
+    height = width * px_h / px_w
+    if height > max_height:
+        height = max_height
+        width = height * px_w / px_h
+
+    class DiagramCard(Flowable):
+        pad = 8.0
+        # Below this the shrunk diagram stops being legible - take the page break instead.
+        min_fit = 200.0
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.hAlign = "CENTER"
+            self.spaceBefore = 6
+            self.spaceAfter = 12
+            self._w, self._h = width + 2 * self.pad, height + 2 * self.pad
+            self._iw, self._ih = width, height
+
+        def wrap(self, avail_width: float, avail_height: float):  # noqa: D102
+            w, h = width, height
+            room_h = avail_height - 2 * self.pad
+            if h > room_h >= self.min_fit:
+                w, h = w * room_h / h, room_h
+            room_w = avail_width - 2 * self.pad
+            if w > room_w:
+                w, h = room_w, h * room_w / w
+            self._iw, self._ih = w, h
+            self._w, self._h = w + 2 * self.pad, h + 2 * self.pad
+            return self._w, self._h
+
+        def draw(self) -> None:  # noqa: D102
+            c = self.canv
+            c.saveState()
+            c.setFillColor(colors.white)
+            c.setStrokeColor(colors.HexColor("#E2E8F0"))
+            c.setLineWidth(0.6)
+            c.roundRect(0, 0, self._w, self._h, 4, stroke=1, fill=1)
+            c.drawImage(
+                ImageReader(io.BytesIO(data)), self.pad, self.pad,
+                width=self._iw, height=self._ih, mask="auto",
+            )
+            c.restoreState()
+
+    return DiagramCard()
+
+
+def _fit_col_widths(
+    cols: list[str], rows: list[list[str]], content_width: float, font_size: float = 8.5
+) -> list[float]:
+    """Distribute the frame width across table columns.
+
+    Every column first reserves enough room for its widest unbreakable word (so short
+    values like ``99.95%`` are never split across lines), then the slack is shared out in
+    proportion to how much text each column holds.
+    """
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    fonts = pdf_fonts()
+    pad = 12.0
+    ceiling = content_width / 2
+    mins: list[float] = []
+    weights: list[float] = []
+    for i in range(len(cols)):
+        cells = [str(cols[i])] + [str(r[i]) if i < len(r) else "" for r in rows]
+        texts = [_strip_inline(c) for c in cells]
+        widest_word = 0.0
+        for text in texts:
+            for word in text.split() or [""]:
+                widest_word = max(
+                    widest_word, stringWidth(pdf_safe(word), fonts["bold"], font_size)
+                )
+        mins.append(min(ceiling, widest_word + pad))
+        weights.append(float(max(4, min(max((len(t) for t in texts), default=1), 60))))
+
+    total_min = sum(mins)
+    if total_min >= content_width:
+        return [w * content_width / total_min for w in mins]
+    slack = content_width - total_min
+    total_weight = sum(weights) or 1.0
+    return [m + slack * w / total_weight for m, w in zip(mins, weights)]
+
+
+def markdown_pdf_flowables(
+    md: str,
+    body_style: Any,
+    *,
+    diagrams: Sequence[dict] | None = None,
+    content_width: float = 6.9 * 72,
+) -> list:
+    """Return a list of reportlab flowables rendering Markdown ``md``.
+
+    ``diagrams`` optionally supplies pre-rendered images for ```mermaid``` fences, each
+    ``{"code": str, "data": bytes, "width": float, "height": float}`` — the chat UI
+    rasterizes the diagram it is already showing so the PDF matches the lane exactly.
+    """
     from reportlab.lib import colors
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.platypus import (
+        KeepTogether,
         ListFlowable,
         ListItem,
         Paragraph,
-        Preformatted,
         Spacer,
         Table,
         TableStyle,
+        XPreformatted,
     )
     from reportlab.platypus.flowables import HRFlowable
 
+    from .tools.artifacts import resolve_image_bytes
+
+    fonts = pdf_fonts()
     heading_style = ParagraphStyle(
-        "MdHeading", parent=body_style, fontName="Helvetica-Bold",
-        textColor=colors.HexColor("#1E1B4B"), spaceBefore=8, spaceAfter=4,
+        "MdHeading", parent=body_style, fontName=fonts["bold"],
+        textColor=colors.HexColor("#1E1B4B"), spaceBefore=10, spaceAfter=4,
+        keepWithNext=1,
     )
+    code_font_size = 8.0
+    # reportlab draws a paragraph's background OUTSIDE its measured box, so the vertical
+    # padding eats into the surrounding space; keep it small and let spaceBefore/After
+    # (which must exceed twice the padding) create the visible gap between blocks.
+    code_pad_x, code_pad_y = 10.0, 7.0
     code_style = ParagraphStyle(
-        "MdCode", parent=body_style, fontName="Courier", fontSize=8.5, leading=11,
-        textColor=colors.HexColor("#111827"), backColor=colors.HexColor("#F3F4F6"),
-        borderPadding=6, spaceBefore=4, spaceAfter=6,
+        "MdCode", parent=body_style, fontName=fonts["mono"], fontSize=code_font_size,
+        leading=code_font_size * 1.45, textColor=colors.HexColor(CODE_FG),
+        backColor=colors.HexColor(CODE_BG),
+        borderPadding=(code_pad_y, code_pad_x, code_pad_y, code_pad_x),
+        borderRadius=4, spaceBefore=15, spaceAfter=22, leftIndent=0, rightIndent=0,
     )
     quote_style = ParagraphStyle(
-        "MdQuote", parent=body_style, leftIndent=12, textColor=colors.HexColor("#475569"),
-        borderPadding=4, spaceBefore=4, spaceAfter=6,
+        "MdQuote", parent=body_style, leftIndent=14, textColor=colors.HexColor("#475569"),
+        fontName=fonts["italic"], borderPadding=4, spaceBefore=4, spaceAfter=6,
     )
+    caption_style = ParagraphStyle(
+        "MdCaption", parent=body_style, fontSize=8, leading=10, alignment=1,
+        textColor=colors.HexColor("#64748B"), spaceBefore=2, spaceAfter=8,
+    )
+    list_style = ParagraphStyle("MdListItem", parent=body_style, spaceAfter=2)
+    # Courier and DejaVu Sans Mono are both 0.6em wide, so this is an exact column count.
+    max_code_chars = int((content_width - 2 * code_pad_x) / (code_font_size * 0.602))
+
+    pending = [dict(d) for d in (diagrams or [])]
+
+    def take_diagram(code: str) -> dict | None:
+        key = (code or "").strip()
+        for i, d in enumerate(pending):
+            if (d.get("code") or "").strip() == key:
+                return pending.pop(i)
+        return None
+
+    def code_flowable(text: str, lang: str):
+        spans = _wrap_code_spans(_code_spans(text.replace("\t", "    "), lang), max_code_chars)
+        return XPreformatted(_code_markup(spans) or " ", code_style)
 
     flow: list = []
     for block in parse_blocks(md):
         kind = block[0]
         if kind == "h":
-            size = max(14 - (block[1] - 1) * 1.5, 9.5)
+            size = max(15 - (block[1] - 1) * 1.6, 10.0)
             hs = ParagraphStyle(
-                f"MdH{block[1]}", parent=heading_style, fontSize=size, leading=size + 3
+                f"MdH{block[1]}", parent=heading_style, fontSize=size, leading=size + 4
             )
             flow.append(Paragraph(_inline_pdf(block[2]), hs))
         elif kind == "p":
             flow.append(Paragraph(_inline_pdf(block[1]), body_style))
         elif kind in ("ul", "ol"):
-            items = [
-                ListItem(Paragraph(_inline_pdf(it), body_style), leftIndent=18)
-                for it in block[1]
-            ]
+            items = [ListItem(Paragraph(_inline_pdf(it), list_style)) for it in block[1]]
+            ordered = kind == "ol"
             flow.append(
                 ListFlowable(
                     items,
-                    bulletType="bullet" if kind == "ul" else "1",
-                    start="1" if kind == "ol" else None,
-                    leftIndent=12,
+                    bulletType="1" if ordered else "bullet",
+                    start=(block[2] if len(block) > 2 else 1) if ordered else None,
+                    bulletFormat="%s." if ordered else None,
+                    leftIndent=18,
+                    bulletDedent=12,
+                    bulletFontName=fonts["body"],
+                    bulletFontSize=body_style.fontSize,
+                    spaceBefore=2,
+                    spaceAfter=6,
                 )
             )
         elif kind == "code":
-            flow.append(Preformatted(block[1] or " ", code_style))
+            text, lang = block[1], (block[2] if len(block) > 2 else "")
+            if lang == "mermaid":
+                d = take_diagram(text)
+                card = (
+                    _diagram_card(
+                        d["data"], content_width, 8.0 * 72,
+                        natural_pt=float(d.get("width") or 0) * 0.75,
+                    )
+                    if d and d.get("data")
+                    else None
+                )
+                if card is not None:
+                    flow.append(card)
+                    continue
+            flow.append(code_flowable(text or " ", lang))
+        elif kind == "image":
+            data = resolve_image_bytes(block[2])
+            card = _diagram_card(data, content_width, 7.0 * 72) if data else None
+            if card is None:
+                flow.append(
+                    Paragraph(_inline_pdf(f"[{block[1] or 'image'}]({block[2]})"), body_style)
+                )
+            elif block[1]:
+                flow.append(
+                    KeepTogether([card, Paragraph(escape(pdf_safe(block[1])), caption_style)])
+                )
+            else:
+                flow.append(card)
         elif kind == "quote":
             flow.append(Paragraph(_inline_pdf(block[1]), quote_style))
         elif kind == "hr":
@@ -351,30 +869,40 @@ def markdown_pdf_flowables(md: str, body_style: Any) -> list:
             cols, rows = block[1], block[2]
             if not cols:
                 continue
-            data = [[Paragraph(_inline_pdf(str(c)), body_style) for c in cols]]
+            cell_style = ParagraphStyle(
+                "MdCell", parent=body_style, fontSize=8.5, leading=11, spaceAfter=0
+            )
+            head_style = ParagraphStyle(
+                "MdCellHead", parent=cell_style, fontName=fonts["bold"],
+                textColor=colors.HexColor("#1E1B4B"),
+            )
+            data = [[Paragraph(_inline_pdf(str(c)), head_style) for c in cols]]
             for r in rows:
                 data.append(
                     [
-                        Paragraph(_inline_pdf(str(r[c_i])) if c_i < len(r) else "", body_style)
+                        Paragraph(_inline_pdf(str(r[c_i])) if c_i < len(r) else "", cell_style)
                         for c_i in range(len(cols))
                     ]
                 )
-            tbl = Table(data, hAlign="LEFT")
+            tbl = Table(
+                data, colWidths=_fit_col_widths(cols, rows, content_width),
+                hAlign="LEFT", repeatRows=1,
+            )
             tbl.setStyle(
                 TableStyle(
                     [
                         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEF2FF")),
-                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#1E1B4B")),
-                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+                         [colors.white, colors.HexColor("#F8FAFC")]),
                         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
                         ("VALIGN", (0, 0), (-1, -1), "TOP"),
                         ("LEFTPADDING", (0, 0), (-1, -1), 5),
                         ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                        ("TOPPADDING", (0, 0), (-1, -1), 3),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                        ("TOPPADDING", (0, 0), (-1, -1), 4),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
                     ]
                 )
             )
             flow.append(tbl)
-            flow.append(Spacer(1, 6))
+            flow.append(Spacer(1, 8))
     return flow

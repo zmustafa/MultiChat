@@ -13,7 +13,7 @@ from ..broadcast import build_lane_history, multiplex, request_stop, sse
 from ..config import settings
 from ..db import get_db
 from ..documents import document_prompt_block
-from ..export import export_session as build_export_file
+from ..export import export_message_pdf, export_session as build_export_file
 from ..models import (
     Attachment,
     GeneratedFile,
@@ -36,6 +36,7 @@ from ..schemas import (
     LaneMessageOut,
     LaneOut,
     LaneUpdate,
+    MessageExportRequest,
     RegenerateRequest,
     SessionCreate,
     SessionDetail,
@@ -887,6 +888,85 @@ def export_comparison(
             mime_type=mime,
             size_bytes=size,
             kind=fmt,
+        )
+    )
+    db.commit()
+    return {"url": f"/api/files/{stored_name}?name={download_name}", "download_name": download_name}
+
+
+# A rasterized mermaid diagram is a few hundred KB; these caps stop a crafted request from
+# pushing the server into a huge allocation.
+_MAX_DIAGRAMS = 40
+_MAX_DIAGRAM_BYTES = 8 * 1024 * 1024
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def _decode_diagrams(payload: MessageExportRequest | None) -> list[dict]:
+    """Decode client-supplied diagram PNGs, skipping anything malformed or oversized."""
+    out: list[dict] = []
+    for item in (payload.diagrams if payload else None) or []:
+        if len(out) >= _MAX_DIAGRAMS:
+            break
+        ref = (item.image or "").strip()
+        if not ref.startswith("data:image/png;base64,"):
+            continue
+        b64 = ref.split(",", 1)[1]
+        if len(b64) > _MAX_DIAGRAM_BYTES:
+            continue
+        try:
+            data = base64.b64decode(b64, validate=True)
+        except Exception:  # noqa: BLE001 — ignore an undecodable diagram, keep the export
+            continue
+        if not data.startswith(_PNG_MAGIC):
+            continue
+        out.append(
+            {
+                "code": item.code or "",
+                "data": data,
+                "width": item.width or 0,
+                "height": item.height or 0,
+            }
+        )
+    return out
+
+
+@router.post("/{session_id}/messages/{message_id}/export")
+def export_single_message(
+    session_id: str,
+    message_id: str,
+    payload: MessageExportRequest | None = None,
+    user: User = Depends(current_user),
+    db: DbSession = Depends(get_db),
+) -> dict:
+    """Export a single lane answer as a standalone US Letter PDF."""
+    s = _get_session(db, user, session_id)
+    msg = db.scalars(
+        select(LaneMessage)
+        .join(Lane, Lane.id == LaneMessage.lane_id)
+        .where(LaneMessage.id == message_id, Lane.session_id == s.id)
+    ).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if not (msg.content or "").strip():
+        raise HTTPException(status_code=400, detail="This response has no content to export")
+
+    try:
+        stored_name, download_name, mime = export_message_pdf(
+            db, s, msg, _decode_diagrams(payload)
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Export failed: {exc}")
+
+    path = os.path.join(settings.UPLOAD_DIR, "generated", stored_name)
+    db.add(
+        GeneratedFile(
+            user_id=user.id,
+            session_id=s.id,
+            stored_name=stored_name,
+            download_name=download_name,
+            mime_type=mime,
+            size_bytes=os.path.getsize(path) if os.path.exists(path) else 0,
+            kind="pdf",
         )
     )
     db.commit()

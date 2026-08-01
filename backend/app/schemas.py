@@ -278,6 +278,19 @@ class JudgeRequest(BaseModel):
     turn_id: str
 
 
+class ExportDiagram(BaseModel):
+    """A ```mermaid``` diagram the chat UI already rendered, as a PNG data URL."""
+
+    code: str
+    image: str
+    width: float | None = None
+    height: float | None = None
+
+
+class MessageExportRequest(BaseModel):
+    diagrams: list[ExportDiagram] | None = None
+
+
 # ---------- Tools ----------
 
 
