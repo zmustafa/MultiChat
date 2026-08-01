@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
 import { apiFetch } from "../api/client";
+import { getLeaderboard } from "../api/deliberation";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useAuth } from "../auth/AuthContext";
 
@@ -644,6 +645,7 @@ export function AnalyticsPage() {
               </div>
 
               {/* Detailed tables */}
+              <CouncilSection />
               <section>
                 <h2 className="mb-2 text-sm font-medium text-gray-500">By model</h2>
                 <Table rows={data.models ?? []} keyLabel="Model" />
@@ -721,5 +723,80 @@ function Table({ rows, keyLabel }: { rows: Agg[]; keyLabel: string }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+/**
+ * Which models earn their seat on a deliberation panel.
+ *
+ * `influence` is the share of peer-accepted claims that pointed at a model; `capitulation`
+ * is how often it changed position without naming what changed its mind. A model with high
+ * influence and low capitulation is genuinely persuasive; high capitulation means it mostly
+ * agrees with whoever spoke last, which is the failure mode multi-model debate is prone to.
+ */
+function CouncilSection() {
+  const { data } = useQuery({
+    queryKey: ["deliberation", "leaderboard"],
+    queryFn: getLeaderboard,
+  });
+  if (!data || data.runs === 0) return null;
+  return (
+    <section>
+      <h2 className="mb-2 text-sm font-medium text-gray-500">
+        Council — which models earn their seat
+        <span className="ml-2 text-xs font-normal text-gray-400">
+          across {data.runs} deliberation{data.runs === 1 ? "" : "s"}
+        </span>
+      </h2>
+      <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500 dark:bg-gray-800">
+            <tr>
+              <th className="px-3 py-2">Model</th>
+              <th className="px-3 py-2">Influence</th>
+              <th className="px-3 py-2">Capitulation</th>
+              <th className="px-3 py-2">Panels</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.models.map((m) => (
+              <tr key={m.model} className="border-t border-gray-100 dark:border-gray-800">
+                <td className="px-3 py-2 font-medium text-gray-800 dark:text-gray-100">
+                  {m.model}
+                </td>
+                <td className="px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-24 rounded bg-gray-100 dark:bg-gray-800">
+                      <div
+                        className="h-2 rounded bg-indigo-500"
+                        style={{ width: `${Math.round((m.influence ?? 0) * 100)}%` }}
+                      />
+                    </div>
+                    <span className="text-xs text-gray-500">
+                      {m.influence == null ? "—" : `${Math.round(m.influence * 100)}%`}
+                    </span>
+                  </div>
+                </td>
+                <td className="px-3 py-2">
+                  <span
+                    title="Changed position without citing what changed its mind. Lower is better."
+                    className={`rounded px-1.5 py-0.5 text-xs ${
+                      m.capitulation == null
+                        ? "text-gray-400"
+                        : m.capitulation > 0.4
+                          ? "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
+                          : "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                    }`}
+                  >
+                    {m.capitulation == null ? "—" : m.capitulation.toFixed(2)}
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-xs text-gray-500">{m.appearances}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }

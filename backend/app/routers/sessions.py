@@ -173,9 +173,11 @@ def _build_user_message(db: DbSession, turn: Turn) -> ChatMessage:
 def list_sessions(
     user: User = Depends(current_user), db: DbSession = Depends(get_db)
 ) -> list[SessionListItem]:
+    # Deliberations are sessions too, but they are not chats — they have their own list
+    # and their own page, so showing them here would send the user to the wrong view.
     rows = db.scalars(
         select(ChatSession)
-        .where(ChatSession.user_id == user.id)
+        .where(ChatSession.user_id == user.id, ChatSession.mode != "deliberation")
         .order_by(ChatSession.updated_at.desc())
     ).all()
     out = []

@@ -8,6 +8,7 @@ from .db import Base, SessionLocal, engine
 from .routers import (
     analytics,
     auth,
+    deliberation,
     evals,
     files,
     folders,
@@ -111,6 +112,7 @@ def _migrate() -> None:
             "pinned": "BOOLEAN DEFAULT 0",
             "archived": "BOOLEAN DEFAULT 0",
             "trashed": "BOOLEAN DEFAULT 0",
+            "mode": "VARCHAR DEFAULT 'compare'",
         },
         "personas": {"tools_enabled": "BOOLEAN DEFAULT 0", "is_default": "BOOLEAN DEFAULT 0"},
         "lanes": {"hidden": "BOOLEAN DEFAULT 0"},
@@ -258,3 +260,4 @@ app.include_router(evals.router)
 app.include_router(integrations.router)
 app.include_router(system.router)
 app.include_router(snapshots.router)
+app.include_router(deliberation.router)

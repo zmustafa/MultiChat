@@ -6,6 +6,7 @@ import { AppLayout } from "./components/AppLayout";
 import { DefaultPasswordPrompt } from "./components/DefaultPasswordPrompt";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { ComparePage } from "./pages/ComparePage";
+import { DeliberationPage } from "./pages/DeliberationPage";
 import { EvalsPage } from "./pages/EvalsPage";
 import { GeneralSettingsPage } from "./pages/GeneralSettingsPage";
 import { SecuritySettingsPage } from "./pages/SecuritySettingsPage";
@@ -68,6 +69,16 @@ export default function App() {
           <Protected>
             <RequireProvider>
               <ComparePage />
+            </RequireProvider>
+          </Protected>
+        }
+      />
+      <Route
+        path="/d/:runId"
+        element={
+          <Protected>
+            <RequireProvider>
+              <DeliberationPage />
             </RequireProvider>
           </Protected>
         }

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useLocation } from "react-router";
+import { Link, useLocation, useNavigate } from "react-router";
 import { asUtcDate } from "../api/client";
 import type { Persona, SearchHit, SessionListItem } from "../api/types";
 import { searchSessions, useFolderMutations, useFolders, useUserSettings } from "../hooks/useExtras";
 import { useDismiss } from "../hooks/useDismiss";
 import { useSessionMutations } from "../hooks/useSessions";
+import { DeliberationSetup } from "./DeliberationSetup";
+import { listDeliberations } from "../api/deliberation";
 
 interface Props {
   sessions: SessionListItem[];
@@ -43,6 +45,12 @@ export function SessionSidebar({
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [deliberateOpen, setDeliberateOpen] = useState(false);
+  const [showDeliberations, setShowDeliberations] = useState(true);
+  const [deliberations, setDeliberations] = useState<
+    { id: string; prompt: string; status: string; converged: boolean; created_at: string }[]
+  >([]);
+  const navigate = useNavigate();
   const { data: userSettings } = useUserSettings();
 
   // "New chat" either launches the default persona directly (when the user opted into that
@@ -92,6 +100,22 @@ export function SessionSidebar({
   const patch = (id: string, body: Record<string, unknown>) =>
     sm.update.mutate({ id, body });
 
+  // Deliberations are not chats, so they get their own list rather than being mixed in.
+  useEffect(() => {
+    let cancelled = false;
+    const load = () =>
+      listDeliberations(15)
+        .then((rows) => !cancelled && setDeliberations(rows))
+        .catch(() => undefined);
+    void load();
+    // Refresh while one is in flight so its status settles without a manual reload.
+    const timer = setInterval(load, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [deliberateOpen]);
+
   return (
     <div className="flex h-full w-60 shrink-0 flex-col border-r border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-950">
       <div className="flex items-center justify-between px-2 pt-2">
@@ -124,6 +148,20 @@ export function SessionSidebar({
         </div>
         {menuOpen && (
           <div className="absolute left-2 right-2 z-10 mt-1 rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-900">
+            <button
+              onClick={() => {
+                setMenuOpen(false);
+                setDeliberateOpen(true);
+              }}
+              title="Put one question to a panel of models and have them review each other"
+              className="block w-full px-3 py-1.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800"
+            >
+              ⚖️ Deliberate…
+              <span className="block truncate text-[11px] text-gray-400">
+                panel answers, reviews, converges
+              </span>
+            </button>
+            <div className="my-1 border-t border-gray-100 dark:border-gray-800" />
             <button
               onClick={() => {
                 setMenuOpen(false);
@@ -354,9 +392,42 @@ export function SessionSidebar({
             {sessions.length === 0 && (
               <div className="p-3 text-xs text-gray-500">No topics yet.</div>
             )}
+            {deliberations.length > 0 && (
+              <div className="border-t border-gray-200 dark:border-gray-800">
+                <button
+                  onClick={() => setShowDeliberations((v) => !v)}
+                  className="flex w-full items-center px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                >
+                  ⚖️ Deliberations ({deliberations.length}){" "}
+                  <span className="ml-1">{showDeliberations ? "▾" : "▸"}</span>
+                </button>
+                {showDeliberations &&
+                  deliberations.map((d) => (
+                    <button
+                      key={d.id}
+                      onClick={() => navigate(`/d/${d.id}`)}
+                      className="block w-full px-3 py-1.5 text-left hover:bg-gray-100 dark:hover:bg-gray-800"
+                      title={d.prompt}
+                    >
+                      <span className="block truncate text-sm text-gray-700 dark:text-gray-200">
+                        {d.prompt || "Deliberation"}
+                      </span>
+                      <span className="block truncate text-[11px] text-gray-400">
+                        {relTime(d.created_at)} ·{" "}
+                        {d.status === "running" || d.status === "pending"
+                          ? "running…"
+                          : d.converged
+                            ? "converged"
+                            : d.status.replace("_", " ")}
+                      </span>
+                    </button>
+                  ))}
+              </div>
+            )}
           </>
         )}
       </div>
+      {deliberateOpen && <DeliberationSetup onClose={() => setDeliberateOpen(false)} />}
     </div>
   );
 

@@ -78,6 +78,8 @@ class Session(Base):
     )
     title: Mapped[str] = mapped_column(String, default="New topic")
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # "compare" (side-by-side lanes) | "deliberation" (panel peer review)
+    mode: Mapped[str] = mapped_column(String, default="compare")
     tools_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     tool_config_json: Mapped[dict] = mapped_column(JSON, default=dict)
     folder_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
@@ -350,6 +352,87 @@ class Integration(Base):
     args_json: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(default=_now)
     updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
+
+
+class DeliberationRun(Base):
+    """One question put to a panel of models: the whole graph, start to finish.
+
+    Panelists are ordinary ``Lane`` rows and each round's revised answer is also written as
+    a ``LaneMessage``, so the existing transcript, export and search features work on a
+    deliberation with no special-casing. This row holds what is unique to the protocol:
+    the per-round convergence trace, the synthesis and the panel metrics.
+    """
+
+    __tablename__ = "deliberation_runs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    turn_id: Mapped[str] = mapped_column(
+        ForeignKey("turns.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    # pending | running | converged | no_consensus | stopped | failed
+    status: Mapped[str] = mapped_column(String, default="pending")
+    prompt: Mapped[str] = mapped_column(Text, default="")
+    rounds_used: Mapped[int] = mapped_column(Integer, default=0)
+    converged: Mapped[bool] = mapped_column(Boolean, default=False)
+    # {max_rounds, judge_lane_id, synthesis, minority_report, mode}
+    config_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    # [{round, agreement, diversity, open_objections, verdicts, decision}]
+    convergence_json: Mapped[list] = mapped_column(JSON, default=list)
+    # {matrix, labels, influence, capitulation}
+    metrics_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    synthesis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    minority_report: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # {do_now: [], consider_later: [], skip: []}
+    extraction_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    synthesis_critique_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    total_calls: Mapped[int] = mapped_column(Integer, default=0)
+    wall_ms: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+    updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
+
+    steps: Mapped[list["DeliberationStep"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+
+
+class DeliberationStep(Base):
+    """A single model call inside a deliberation, with the exact input it was given.
+
+    ``input_json`` is kept verbatim so a surprising verdict can always be traced back to
+    what the model actually saw.
+    """
+
+    __tablename__ = "deliberation_steps"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("deliberation_runs.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    lane_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    round_index: Mapped[int] = mapped_column(Integer, default=0)
+    # draft | critique | synthesis | synthesis_critique | synthesis_revise
+    phase: Mapped[str] = mapped_column(String, default="draft")
+    label: Mapped[str | None] = mapped_column(String, nullable=True)  # "Peer A"
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    provider_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    verdict: Mapped[str | None] = mapped_column(String, nullable=True)
+    input_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    output_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    degraded: Mapped[bool] = mapped_column(Boolean, default=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    usage_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+
+    run: Mapped["DeliberationRun"] = relationship(back_populates="steps")
 
 
 

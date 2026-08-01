@@ -50,6 +50,18 @@ class Settings(BaseSettings):
     LLM_MAX_TOKENS: int = 4096
     LLM_REQUEST_TIMEOUT: float = 120.0
 
+    # deliberation (multi-model peer review)
+    DELIBERATION_MAX_PARTICIPANTS: int = 5
+    # Sycophancy intensifies from round 3 onwards, so the cap is deliberately low.
+    DELIBERATION_MAX_ROUNDS: int = 3
+    DELIBERATION_DEFAULT_ROUNDS: int = 2
+    DELIBERATION_CONCURRENCY: int = 5
+    # Whole-run wall clock; a run that exceeds it goes straight to synthesis.
+    DELIBERATION_WALL_CLOCK_MS: int = 900_000
+    # Peer answers are truncated to this many characters before being shown to a reviewer.
+    DELIBERATION_PEER_CHARS: int = 4000
+    DELIBERATION_REPAIR_ATTEMPTS: int = 1
+
 
 @lru_cache
 def get_settings() -> Settings:
