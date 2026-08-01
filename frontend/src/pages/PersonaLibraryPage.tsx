@@ -405,6 +405,10 @@ export function PersonaLibraryPage() {
     );
   }, [personas, query]);
 
+  // Panels and chat personas do different things, so they get their own sections.
+  const panelPersonas = filtered.filter((p) => p.deliberation);
+  const chatPersonas = filtered.filter((p) => !p.deliberation);
+
   async function startTopic(p: Persona) {
     if (p.deliberation) {
       // A panel needs its question first, so hand off to the compose screen.
@@ -534,138 +538,27 @@ export function PersonaLibraryPage() {
                 : "No personas match your search."}
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {filtered.map((p) => (
-                <div
-                  key={p.id}
-                  className="flex flex-col rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900"
-                >
-                  <div className="mb-1 flex items-start justify-between gap-2">
-                    <h3 className="truncate font-semibold" title={p.name}>
-                      {p.name}
-                    </h3>
-                    <div className="flex shrink-0 items-center gap-1">
-                      {p.deliberation && (
-                        <span
-                          title={`Opens a panel — ${
-                            p.deliberation.mode === "quick"
-                              ? "quick vote"
-                              : `council, ${p.deliberation.max_rounds} rounds`
-                          }`}
-                          className="rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300"
-                        >
-                          ⚖️ {p.deliberation.mode}
-                        </span>
-                      )}
-                      {p.is_default && (
-                        <span
-                          title="Opens automatically on New chat"
-                          className="rounded bg-brand/15 px-1.5 py-0.5 text-[10px] font-medium text-brand"
-                        >
-                          ★ default
-                        </span>
-                      )}
-                      {p.tools_enabled && (
-                        <span
-                          title="Tools on by default"
-                          className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-950/50 dark:text-amber-400"
-                        >
-                          🛠 tools
-                        </span>
-                      )}
-                    </div>
+            <div className="space-y-6">
+              {panelPersonas.length > 0 && (
+                <section>
+                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    ⚖️ Deliberation panels ({panelPersonas.length})
+                  </h3>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {panelPersonas.map(renderCard)}
                   </div>
-                  {p.description && (
-                    <p className="mb-2 text-xs text-gray-500">{p.description}</p>
-                  )}
-                  {p.system_prompt && (
-                    <p className="mb-2 line-clamp-3 text-xs text-gray-400">
-                      {p.system_prompt}
-                    </p>
-                  )}
-                  <div className="mb-3 flex flex-wrap gap-1">
-                    {p.lanes.map((l, i) => (
-                      <span
-                        key={i}
-                        className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] dark:bg-gray-800"
-                      >
-                        {l.role === "judge" && "⚖️ "}
-                        {l.model}
-                        <span className="text-gray-400">
-                          · {providerName(providers, l.provider_id)}
-                        </span>
-                      </span>
-                    ))}
-                    {p.lanes.length === 0 && (
-                      <span className="text-[10px] text-gray-400">no lanes</span>
-                    )}
+                </section>
+              )}
+              {chatPersonas.length > 0 && (
+                <section>
+                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    💬 Chat personas ({chatPersonas.length})
+                  </h3>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {chatPersonas.map(renderCard)}
                   </div>
-                  <div className="mt-auto flex flex-wrap items-center gap-1 border-t border-gray-100 pt-2 text-xs dark:border-gray-800">
-                    <button
-                      onClick={() => startTopic(p)}
-                      className="rounded bg-brand px-2 py-1 font-medium text-white hover:brightness-110"
-                    >
-                      {p.deliberation ? "⚖️ Ask a panel" : "▶ Use"}
-                    </button>
-                    {!p.deliberation && (
-                      <button
-                        onClick={() =>
-                          setDefault.mutate({ id: p.id, isDefault: !p.is_default })
-                        }
-                        title={
-                          p.is_default
-                            ? "This persona opens on New chat — click to unset"
-                            : "Make this the default persona for New chat"
-                        }
-                        className={`rounded border px-2 py-1 ${
-                          p.is_default
-                            ? "border-brand bg-brand/10 text-brand"
-                            : "border-gray-300 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-800"
-                        }`}
-                      >
-                        {p.is_default ? "★ Default" : "☆ Default"}
-                      </button>
-                    )}
-                    <button
-                      onClick={() => setEditing(p)}
-                      className="rounded border border-gray-300 px-2 py-1 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-800"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={() => clonePersona(p)}
-                      title="Duplicate this persona"
-                      className="rounded border border-gray-300 px-2 py-1 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-800"
-                    >
-                      ⧉ Clone
-                    </button>
-                    {!p.deliberation && p.lanes.length >= 2 && (
-                      <button
-                        onClick={() => cloneAsDeliberation(p)}
-                        title="Copy this line-up into a deliberation persona"
-                        className="rounded border border-gray-300 px-2 py-1 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-800"
-                      >
-                        ⚖️ As panel
-                      </button>
-                    )}
-                    <button
-                      onClick={() => exportPersona(p)}
-                      title="Export as JSON"
-                      className="rounded border border-gray-300 px-2 py-1 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-800"
-                    >
-                      ⭳
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (confirm(`Delete persona “${p.name}”?`)) remove.mutate(p.id);
-                      }}
-                      className="ml-auto rounded border border-red-200 px-2 py-1 text-red-600 hover:bg-red-50 dark:border-red-900 dark:hover:bg-red-950/40"
-                    >
-                      🗑
-                    </button>
-                  </div>
-                </div>
-              ))}
+                </section>
+              )}
             </div>
           )}
         </div>
@@ -680,4 +573,134 @@ export function PersonaLibraryPage() {
       )}
     </div>
   );
+
+  function renderCard(p: Persona) {
+    return (
+      <div
+        key={p.id}
+        className="flex flex-col rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900"
+      >
+        <div className="mb-1 flex items-start justify-between gap-2">
+          <h3 className="truncate font-semibold" title={p.name}>
+            {p.name}
+          </h3>
+          <div className="flex shrink-0 items-center gap-1">
+            {p.deliberation && (
+              <span
+                title={`Opens a panel — ${
+                  p.deliberation.mode === "quick"
+                    ? "quick vote"
+                    : `council, ${p.deliberation.max_rounds} rounds`
+                }`}
+                className="rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300"
+              >
+                ⚖️ {p.deliberation.mode}
+              </span>
+            )}
+            {p.is_default && (
+              <span
+                title="Opens automatically on New chat"
+                className="rounded bg-brand/15 px-1.5 py-0.5 text-[10px] font-medium text-brand"
+              >
+                ★ default
+              </span>
+            )}
+            {p.tools_enabled && (
+              <span
+                title="Tools on by default"
+                className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-950/50 dark:text-amber-400"
+              >
+                🛠 tools
+              </span>
+            )}
+          </div>
+        </div>
+        {p.description && (
+          <p className="mb-2 text-xs text-gray-500">{p.description}</p>
+        )}
+        {p.system_prompt && (
+          <p className="mb-2 line-clamp-3 text-xs text-gray-400">{p.system_prompt}</p>
+        )}
+        <div className="mb-3 flex flex-wrap gap-1">
+          {p.lanes.map((l, i) => (
+            <span
+              key={i}
+              className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] dark:bg-gray-800"
+            >
+              {l.role === "judge" && "⚖️ "}
+              {l.model}
+              <span className="text-gray-400">
+                · {providerName(providers, l.provider_id)}
+              </span>
+            </span>
+          ))}
+          {p.lanes.length === 0 && (
+            <span className="text-[10px] text-gray-400">no lanes</span>
+          )}
+        </div>
+        <div className="mt-auto flex flex-wrap items-center gap-1 border-t border-gray-100 pt-2 text-xs dark:border-gray-800">
+          <button
+            onClick={() => startTopic(p)}
+            className="rounded bg-brand px-2 py-1 font-medium text-white hover:brightness-110"
+          >
+            {p.deliberation ? "⚖️ Ask a panel" : "▶ Use"}
+          </button>
+          {!p.deliberation && (
+            <button
+              onClick={() => setDefault.mutate({ id: p.id, isDefault: !p.is_default })}
+              title={
+                p.is_default
+                  ? "This persona opens on New chat — click to unset"
+                  : "Make this the default persona for New chat"
+              }
+              className={`rounded border px-2 py-1 ${
+                p.is_default
+                  ? "border-brand bg-brand/10 text-brand"
+                  : "border-gray-300 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-800"
+              }`}
+            >
+              {p.is_default ? "★ Default" : "☆ Default"}
+            </button>
+          )}
+          <button
+            onClick={() => setEditing(p)}
+            className="rounded border border-gray-300 px-2 py-1 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-800"
+          >
+            Edit
+          </button>
+          <button
+            onClick={() => clonePersona(p)}
+            title="Duplicate this persona"
+            className="rounded border border-gray-300 px-2 py-1 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-800"
+          >
+            ⧉ Clone
+          </button>
+          {!p.deliberation && p.lanes.length >= 2 && (
+            <button
+              onClick={() => cloneAsDeliberation(p)}
+              title="Copy this line-up into a deliberation persona"
+              className="rounded border border-gray-300 px-2 py-1 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-800"
+            >
+              ⚖️ As panel
+            </button>
+          )}
+          <button
+            onClick={() => exportPersona(p)}
+            title="Export as JSON"
+            className="rounded border border-gray-300 px-2 py-1 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-800"
+          >
+            ⭳
+          </button>
+          <button
+            onClick={() => {
+              if (confirm(`Delete persona “${p.name}”?`)) remove.mutate(p.id);
+            }}
+            className="ml-auto rounded border border-red-200 px-2 py-1 text-red-600 hover:bg-red-50 dark:border-red-900 dark:hover:bg-red-950/40"
+          >
+            🗑
+          </button>
+        </div>
+      </div>
+    );
+  }
 }
