@@ -747,6 +747,12 @@ function CouncilSection() {
         <span className="ml-2 text-xs font-normal text-gray-400">
           across {data.runs} deliberation{data.runs === 1 ? "" : "s"}
         </span>
+        <Link
+          to="/benchmark"
+          className="ml-3 rounded border border-gray-300 px-2 py-0.5 text-xs font-normal text-gray-600 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+        >
+          Is it worth it? →
+        </Link>
       </h2>
       <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
         <table className="w-full text-sm">

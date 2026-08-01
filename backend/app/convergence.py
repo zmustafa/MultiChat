@@ -261,3 +261,38 @@ def panel_metrics(
         "final_overlap": traces[-1]["claim_overlap"] if traces else None,
         "final_diversity": traces[-1]["diversity"] if traces else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Voting — the baseline the whole protocol has to beat
+# ---------------------------------------------------------------------------
+
+
+def borda_count(
+    ballots: dict[str, list[str]], candidates: list[str]
+) -> tuple[list[tuple[str, int]], dict[str, int]]:
+    """Aggregate ranked ballots by Borda count.
+
+    Most of the measured benefit of multi-model setups comes from plain voting rather than
+    from the debate that follows it, so this is not a lesser mode — it is the yardstick.
+    Each ballot ranks candidates best-first; a candidate scores ``n-1`` for a first place,
+    ``n-2`` for a second, and so on. Ties break on the number of first-place votes.
+
+    Returns ``(ranking, scores)`` where ranking is sorted best-first.
+    """
+    n = len(candidates)
+    scores = {c: 0 for c in candidates}
+    firsts = {c: 0 for c in candidates}
+    for ranking in ballots.values():
+        seen: set[str] = set()
+        position = 0
+        for candidate in ranking:
+            if candidate not in scores or candidate in seen:
+                continue  # ignore unknown or repeated entries rather than failing the vote
+            seen.add(candidate)
+            scores[candidate] += n - 1 - position
+            if position == 0:
+                firsts[candidate] += 1
+            position += 1
+    ordered = sorted(scores.items(), key=lambda kv: (kv[1], firsts[kv[0]]), reverse=True)
+    return ordered, firsts

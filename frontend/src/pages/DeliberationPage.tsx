@@ -4,9 +4,10 @@ import { MessageRenderer } from "../components/MessageRenderer";
 import { TextDiff } from "../components/TextDiff";
 import { DeliberationAnalysis } from "../components/DeliberationAnalysis";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { continueInChat, stepAnswer, stopDeliberation } from "../api/deliberation";
-import type { ConvergenceTrace, DeliberationStep } from "../api/deliberation";
+import { continueInChat, exportDeliberationPdf, stepAnswer, stopDeliberation, unsupportedFacts } from "../api/deliberation";
+import type { ConvergenceTrace, DeliberationStep, VoteResult } from "../api/deliberation";
 import { mergeSteps, useDeliberation } from "../hooks/useDeliberation";
+import { mediaUrl } from "../api/client";
 
 function VerdictChip({ verdict }: { verdict?: string | null }) {
   if (!verdict) return null;
@@ -90,6 +91,14 @@ function StepCard({
               </span>
             )}
             {output?.claims?.length ? <span>{output.claims.length} claims</span> : null}
+            {step && unsupportedFacts(step) > 0 && (
+              <span
+                title="Claims marked as facts with no stated basis"
+                className="rounded bg-amber-100 px-1 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+              >
+                {unsupportedFacts(step)} unsupported
+              </span>
+            )}
             {step?.phase === "critique" && (
               <span>
                 <span className="text-emerald-600">✓{accepted}</span>{" "}
@@ -206,6 +215,43 @@ function ConvergenceStrip({
   );
 }
 
+/** Borda result for Quick mode — the cheap arm's answer, and how the panel ranked it. */
+function VotePanel({
+  vote,
+  nameOf,
+}: {
+  vote: VoteResult;
+  nameOf: (laneId: string) => string;
+}) {
+  const top = vote.ranking?.[0]?.score || 1;
+  return (
+    <section className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900">
+      <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+        Panel vote · Borda count · {vote.voters} ballot{vote.voters === 1 ? "" : "s"}
+      </div>
+      <div className="space-y-1">
+        {(vote.ranking ?? []).map((entry, index) => (
+          <div key={entry.lane_id} className="flex items-center gap-2 text-xs">
+            <span className="w-4 text-gray-400">{index + 1}.</span>
+            <span className="w-40 truncate text-gray-700 dark:text-gray-200">
+              {nameOf(entry.lane_id)}
+            </span>
+            <div className="h-2 flex-1 rounded bg-gray-100 dark:bg-gray-800">
+              <div
+                className={`h-2 rounded ${index === 0 ? "bg-emerald-500" : "bg-indigo-400"}`}
+                style={{ width: `${Math.max(4, (entry.score / top) * 100)}%` }}
+              />
+            </div>
+            <span className="w-16 text-right text-gray-500">
+              {entry.score} pts{entry.first_place_votes ? ` · ${entry.first_place_votes}×1st` : ""}
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export function DeliberationPage() {
   const { runId } = useParams();
   const navigate = useNavigate();
@@ -217,6 +263,7 @@ export function DeliberationPage() {
   const participants = run?.participants.filter((p) => p.role === "responder") ?? [];
   const traces = live.traces.length ? live.traces : (run?.convergence ?? []);
   const metrics = live.metrics ?? run?.metrics ?? null;
+  const vote = (run?.vote && "ranking" in run.vote ? (run.vote as VoteResult) : null);
   const synthesis = live.synthesis?.answer
     ? live.synthesis
     : run?.synthesis
@@ -263,6 +310,23 @@ export function DeliberationPage() {
     }
   }
 
+  async function onExport() {
+    if (!runId) return;
+    setBusy("export");
+    try {
+      const res = await exportDeliberationPdf(runId);
+      const a = document.createElement("a");
+      a.href = mediaUrl(res.url);
+      a.download = res.download_name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (e) {
+      alert((e as Error).message);
+    }
+    setBusy("");
+  }
+
   if (!runId) return null;
 
   return (
@@ -293,6 +357,14 @@ export function DeliberationPage() {
               className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
             >
               📊 Analysis
+            </button>
+            <button
+              onClick={onExport}
+              disabled={busy === "export"}
+              title="Export the whole deliberation — rounds, objections, synthesis, dissent"
+              className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+            >
+              {busy === "export" ? "…" : "⬇ PDF"}
             </button>
             <ThemeToggle />
           </span>
@@ -346,6 +418,15 @@ export function DeliberationPage() {
                 </section>
               );
             })}
+
+            {vote && vote.ranking && vote.ranking.length > 0 && (
+              <VotePanel
+                vote={vote}
+                nameOf={(laneId) =>
+                  participants.find((p) => p.lane_id === laneId)?.model ?? laneId.slice(0, 6)
+                }
+              />
+            )}
 
             {live.notice && (
               <div className="rounded border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">

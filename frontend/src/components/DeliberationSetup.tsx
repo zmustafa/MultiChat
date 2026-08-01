@@ -50,6 +50,8 @@ export function DeliberationSetup({ onClose }: { onClose: () => void }) {
   const [selected, setSelected] = useState<string[]>([]);
   const [judgeKey, setJudgeKey] = useState<string>("");
   const [rounds, setRounds] = useState(2);
+  const [mode, setMode] = useState<"council" | "quick">("council");
+  const [evidence, setEvidence] = useState(false);
   const [synthesis, setSynthesis] = useState(true);
   const [critiqueSynthesis, setCritiqueSynthesis] = useState(true);
   const [prompt, setPrompt] = useState("");
@@ -100,7 +102,10 @@ export function DeliberationSetup({ onClose }: { onClose: () => void }) {
   const providerIds = new Set(chosen.map((c) => c.providerId));
   const sameLab = chosen.length > 1 && providerIds.size < chosen.length;
 
-  const calls = chosen.length * (1 + rounds) + (synthesis ? 1 : 0) + (critiqueSynthesis ? 2 : 0);
+  const calls =
+    mode === "quick"
+      ? chosen.length * 2
+      : chosen.length * (1 + rounds) + (synthesis ? 1 : 0) + (critiqueSynthesis ? 2 : 0);
 
   function toggle(key: string) {
     setSelected((prev) =>
@@ -130,6 +135,8 @@ export function DeliberationSetup({ onClose }: { onClose: () => void }) {
         synthesis,
         minority_report: true,
         critique_synthesis: critiqueSynthesis,
+        mode,
+        evidence,
       });
       onClose();
       navigate(`/d/${res.run_id}`);
@@ -158,6 +165,43 @@ export function DeliberationSetup({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="space-y-4 px-5 py-4">
+          <section>
+            <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+              Mode
+            </label>
+            <div className="mt-1 grid grid-cols-2 gap-2">
+              {(
+                [
+                  [
+                    "quick",
+                    "Quick",
+                    "Everyone answers, then the panel votes. Cheap, and the baseline debate has to beat.",
+                  ],
+                  [
+                    "council",
+                    "Council",
+                    "Full peer review over rounds, then a synthesis and a minority report.",
+                  ],
+                ] as const
+              ).map(([value, name, blurb]) => (
+                <button
+                  key={value}
+                  onClick={() => setMode(value)}
+                  className={`rounded-lg border p-2 text-left ${
+                    mode === value
+                      ? "border-brand bg-brand/5"
+                      : "border-gray-300 dark:border-gray-600"
+                  }`}
+                >
+                  <div className="text-xs font-semibold text-gray-800 dark:text-gray-100">
+                    {name}
+                  </div>
+                  <div className="text-[10px] leading-tight text-gray-500">{blurb}</div>
+                </button>
+              ))}
+            </div>
+          </section>
+
           <section>
             <div className="mb-1 flex items-baseline justify-between">
               <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
@@ -232,8 +276,9 @@ export function DeliberationSetup({ onClose }: { onClose: () => void }) {
                   <button
                     key={r}
                     onClick={() => setRounds(r)}
-                    className={`flex-1 rounded border px-2 py-1 text-xs ${
-                      rounds === r
+                    disabled={mode === "quick"}
+                    className={`flex-1 rounded border px-2 py-1 text-xs disabled:opacity-40 ${
+                      rounds === r && mode === "council"
                         ? "border-brand bg-brand text-white"
                         : "border-gray-300 text-gray-600 dark:border-gray-600 dark:text-gray-300"
                     }`}
@@ -242,21 +287,26 @@ export function DeliberationSetup({ onClose }: { onClose: () => void }) {
                   </button>
                 ))}
               </div>
-              {rounds >= 3 && (
-                <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
-                  ⚠ Models agree more the longer they talk — 2 rounds is usually the
-                  sweet spot.
-                </p>
+              {mode === "quick" ? (
+                <p className="mt-1 text-[11px] text-gray-400">Quick mode does not review.</p>
+              ) : (
+                rounds >= 3 && (
+                  <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
+                    ⚠ Models agree more the longer they talk — 2 rounds is usually the
+                    sweet spot.
+                  </p>
+                )
               )}
             </div>
           </section>
 
-          <section className="flex gap-4 text-xs text-gray-700 dark:text-gray-200">
+          <section className="flex flex-wrap gap-4 text-xs text-gray-700 dark:text-gray-200">
             <label className="flex items-center gap-1.5">
               <input
                 type="checkbox"
                 checked={synthesis}
                 onChange={(e) => setSynthesis(e.target.checked)}
+                disabled={mode === "quick"}
               />
               Synthesis + minority report
             </label>
@@ -265,18 +315,37 @@ export function DeliberationSetup({ onClose }: { onClose: () => void }) {
                 type="checkbox"
                 checked={critiqueSynthesis}
                 onChange={(e) => setCritiqueSynthesis(e.target.checked)}
-                disabled={!synthesis}
+                disabled={!synthesis || mode === "quick"}
               />
               Audit the synthesis
+            </label>
+            <label
+              className="flex items-center gap-1.5"
+              title="Every claim marked as a fact must state what it rests on, or be re-labelled. Models are not given web access, so this surfaces unsupported assertions rather than verifying them."
+            >
+              <input
+                type="checkbox"
+                checked={evidence}
+                onChange={(e) => setEvidence(e.target.checked)}
+              />
+              Require evidence on facts
             </label>
           </section>
 
           <section className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs dark:border-indigo-900 dark:bg-indigo-950">
             <div className="font-medium text-indigo-900 dark:text-indigo-200">
-              {chosen.length} model{chosen.length === 1 ? "" : "s"} × {1 + rounds} pass
-              {rounds === 0 ? "" : "es"}
-              {synthesis ? " + synthesis" : ""} = <strong>{calls} calls</strong> ·{" "}
-              {estimateCost(calls)}
+              {mode === "quick" ? (
+                <>
+                  {chosen.length} model{chosen.length === 1 ? "" : "s"} answer + vote ={" "}
+                  <strong>{calls} calls</strong> · {estimateCost(calls)}
+                </>
+              ) : (
+                <>
+                  {chosen.length} model{chosen.length === 1 ? "" : "s"} × {1 + rounds} passes
+                  {synthesis ? " + synthesis" : ""} = <strong>{calls} calls</strong> ·{" "}
+                  {estimateCost(calls)}
+                </>
+              )}
             </div>
             <div className="text-indigo-700/80 dark:text-indigo-300/80">
               roughly {Math.max(1, Math.round((calls * 18) / 60))}–
@@ -297,9 +366,13 @@ export function DeliberationSetup({ onClose }: { onClose: () => void }) {
             />
             {hint && hint.recommend === "single" && (
               <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
-                ⓘ This looks like a {hint.complexity} question — a single model is
-                probably enough, and panels can over-correct on simple facts.
-                {hint.reason ? ` (${hint.reason})` : ""}
+                ⓘ This looks like a {hint.complexity} question — panels can over-correct on
+                simple facts.{hint.reason ? ` (${hint.reason})` : ""}{" "}
+                {mode === "council" && (
+                  <button onClick={() => setMode("quick")} className="underline">
+                    Use Quick mode instead
+                  </button>
+                )}
               </p>
             )}
           </section>

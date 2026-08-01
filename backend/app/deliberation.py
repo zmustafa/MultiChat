@@ -41,6 +41,7 @@ from .convergence import (
     APPROVE,
     REQUEST_CHANGES,
     VERDICTS,
+    borda_count,
     panel_metrics,
     score_round,
     should_continue,
@@ -66,6 +67,27 @@ _CLAIMS_NOTE = (
     "short id (c1, c2, ...)."
 )
 
+_EVIDENCE_NOTE = (
+    "\n\nEVIDENCE: every claim of kind 'fact' must carry a `support` field naming what it "
+    "rests on — a specification, vendor documentation, a measurement, or published data. If "
+    "a claim is really your judgement rather than a fact, mark its kind honestly instead of "
+    "inventing a source. Never cite a document you are not sure exists."
+)
+
+VOTE_SYSTEM = (
+    "You are judging answers to the question below.\n\n"
+    "The candidate answers are ANONYMIZED and shuffled. One of them may be your own — you "
+    "are not told which, and you must not try to work it out. Judge only the content.\n\n"
+    "Rank them best-first on: correctness, completeness, and whether the recommendation is "
+    "concrete enough to act on. Verbosity is not quality; a longer answer that hedges is "
+    "worse than a shorter one that commits."
+)
+
+VOTE_SCHEMA = """{
+  "ranking": ["Answer A", "Answer C", "Answer B"],
+  "reason": "one sentence on why the top answer wins"
+}"""
+
 DRAFT_SYSTEM = (
     "You are an expert analyst answering a question independently.\n\n"
     "Several other models are answering the same question right now. You cannot see them "
@@ -79,7 +101,7 @@ DRAFT_SCHEMA = """{
   "answer": "your full answer, in Markdown",
   "reasoning_summary": "2-3 sentences on how you reached it",
   "assumptions": ["anything you had to assume"],
-  "claims": [{"id": "c1", "text": "one checkable assertion", "kind": "fact|recommendation|estimate"}],
+  "claims": [{"id": "c1", "text": "one checkable assertion", "kind": "fact|recommendation|estimate", "support": "what this rests on, or null"}],
   "confidence": 0.0
 }"""
 
@@ -114,7 +136,7 @@ CRITIQUE_SCHEMA = """{
   "position_changed": false,
   "change_trigger": null,
   "revised_answer": "your full standalone answer, in Markdown",
-  "claims": [{"id": "c1", "text": "one checkable assertion", "kind": "fact|recommendation|estimate"}],
+  "claims": [{"id": "c1", "text": "one checkable assertion", "kind": "fact|recommendation|estimate", "support": "what this rests on, or null"}],
   "confidence": 0.0
 }"""
 
@@ -259,6 +281,10 @@ def _schedule_cleanup(run_id: str) -> None:
 _LABELS = ["Peer A", "Peer B", "Peer C", "Peer D", "Peer E", "Peer F"]
 
 
+class _Finished(Exception):
+    """Internal signal: this run is complete and should skip straight to teardown."""
+
+
 def _truncate(text: str, limit: int | None = None) -> str:
     limit = limit or settings.DELIBERATION_PEER_CHARS
     text = text or ""
@@ -283,6 +309,42 @@ def _validate_critique(data: dict) -> str | None:
     if not str(data.get("revised_answer") or "").strip():
         return "revised_answer must not be empty"
     return None
+
+
+def unsupported_facts(output: dict) -> list[str]:
+    """Factual claims asserted with no stated basis."""
+    missing = []
+    for claim in output.get("claims") or []:
+        if not isinstance(claim, dict):
+            continue
+        if str(claim.get("kind") or "").lower() != "fact":
+            continue
+        if not str(claim.get("support") or "").strip():
+            missing.append(str(claim.get("id") or "?"))
+    return missing
+
+
+def _require_evidence(data: dict) -> str | None:
+    missing = unsupported_facts(data)
+    if missing:
+        return (
+            "these claims are marked kind='fact' but have no 'support': "
+            f"{', '.join(missing)} — either state what each rests on or change its kind"
+        )
+    return None
+
+
+def _validate_vote(candidates: list[str]):
+    def check(data: dict) -> str | None:
+        ranking = data.get("ranking")
+        if not isinstance(ranking, list) or not ranking:
+            return "ranking must be a non-empty list of candidate labels"
+        unknown = [r for r in ranking if r not in candidates]
+        if unknown:
+            return f"ranking contains unknown labels: {', '.join(map(str, unknown[:3]))}"
+        return None
+
+    return check
 
 
 def _answer_of(output: dict) -> str:
@@ -548,7 +610,7 @@ def _set_lane_states(lane_ids: list[str], state: str) -> None:
         db.close()
 
 
-def _draft_job(hub: _Hub, run_id: str, participant: dict, prompt: str, step_id: str) -> Any:
+def _draft_job(hub: _Hub, run_id: str, participant: dict, prompt: str, step_id: str, evidence: bool = False) -> Any:
     async def job() -> dict:
         hub.publish(
             _sse_step(
@@ -570,11 +632,11 @@ def _draft_job(hub: _Hub, run_id: str, participant: dict, prompt: str, step_id: 
             round_index=0,
             phase="draft",
             label=None,
-            system=DRAFT_SYSTEM,
+            system=DRAFT_SYSTEM + (_EVIDENCE_NOTE if evidence else ""),
             user=f"QUESTION:\n{prompt}",
             schema=DRAFT_SCHEMA,
             required=("answer",),
-            validate=None,
+            validate=_require_evidence if evidence else None,
             hub=hub,
             step_id=step_id,
         )
@@ -673,6 +735,112 @@ def _translate_peers(output: dict, label_to_lane: dict[str, str]) -> dict:
     return translated
 
 
+def _vote_job(
+    hub: _Hub,
+    run_id: str,
+    voter: dict,
+    prompt: str,
+    slate: list[tuple[str, dict]],
+    step_id: str,
+) -> Any:
+    """Ask one panelist to rank the whole anonymized slate, its own answer included.
+
+    Every voter sees the same labels in the same order — a shared slate is what makes the
+    ballots comparable — but nobody is told which entry is theirs.
+    """
+    blocks = "\n".join(
+        f"--- {label} ---\n{_truncate(_answer_of(output), 2500)}\n" for label, output in slate
+    )
+    candidates = [label for label, _ in slate]
+    user = (
+        f"QUESTION:\n{prompt}\n\n"
+        f"CANDIDATE ANSWERS ({len(slate)}):\n{blocks}\n"
+        f"Rank all of: {', '.join(candidates)}"
+    )
+
+    async def job() -> dict:
+        hub.publish(
+            _sse_step(
+                "step_start",
+                {
+                    "step_id": step_id,
+                    "round": 0,
+                    "phase": "vote",
+                    "lane_id": voter["lane_id"],
+                    "model": voter["model"],
+                },
+            )
+        )
+        return await _run_step(
+            run_id=run_id,
+            lane_id=voter["lane_id"],
+            model=voter["model"],
+            provider_id=voter["provider_id"],
+            round_index=0,
+            phase="vote",
+            label=None,
+            system=VOTE_SYSTEM,
+            user=user,
+            schema=VOTE_SCHEMA,
+            required=("ranking",),
+            validate=_validate_vote(candidates),
+            hub=hub,
+            step_id=step_id,
+        )
+
+    return job
+
+
+async def _run_vote(
+    hub: _Hub, run_id: str, panel: list[dict], prompt: str, outputs: dict[str, dict]
+) -> tuple[dict, int]:
+    """Hold a Borda vote over the current answers. Returns (result, calls made)."""
+    entries = [p for p in panel if outputs.get(p["lane_id"])]
+    if len(entries) < 2:
+        return {}, 0
+    order = list(entries)
+    random.shuffle(order)
+    slate = [(f"Answer {chr(65 + i)}", outputs[p["lane_id"]]) for i, p in enumerate(order)]
+    label_to_lane = {f"Answer {chr(65 + i)}": p["lane_id"] for i, p in enumerate(order)}
+
+    hub.publish(_sse_step("vote_start", {"candidates": list(label_to_lane)}))
+    results = await _fan_out(
+        [
+            _vote_job(hub, run_id, voter, prompt, slate, f"{run_id}:vote:{voter['lane_id']}")
+            for voter in entries
+        ],
+        settings.DELIBERATION_CONCURRENCY,
+    )
+
+    ballots: dict[str, list[str]] = {}
+    for voter, result in zip(entries, results):
+        if result.get("ok"):
+            ranking = result["output"].get("ranking") or []
+            ballots[voter["lane_id"]] = [str(r) for r in ranking if isinstance(r, str)]
+    if not ballots:
+        return {}, len(results)
+
+    ordered, firsts = borda_count(ballots, list(label_to_lane))
+    ranking = [
+        {
+            "lane_id": label_to_lane[label],
+            "label": label,
+            "score": score,
+            "first_place_votes": firsts.get(label, 0),
+        }
+        for label, score in ordered
+    ]
+    winner = ranking[0] if ranking else None
+    payload = {
+        "ranking": ranking,
+        "winner_lane_id": winner["lane_id"] if winner else None,
+        "ballots": {k: v for k, v in ballots.items()},
+        "voters": len(ballots),
+    }
+    hub.publish(_sse_step("vote_done", payload))
+    return payload, len(results)
+
+
 async def _drive(run_id: str, hub: _Hub) -> None:
     """Run one deliberation to completion, publishing SSE frames as it goes."""
     started = time.monotonic()
@@ -692,6 +860,9 @@ async def _drive(run_id: str, hub: _Hub) -> None:
         min(int(config.get("max_rounds") or settings.DELIBERATION_DEFAULT_ROUNDS),
             settings.DELIBERATION_MAX_ROUNDS),
     )
+    # "quick" is draft + vote only: the majority-vote baseline that debate has to beat.
+    quick = str(config.get("mode") or "council").lower() == "quick"
+    evidence = bool(config.get("evidence"))
     concurrency = settings.DELIBERATION_CONCURRENCY
     lane_ids = [p["lane_id"] for p in panel]
     calls = 0
@@ -722,7 +893,7 @@ async def _drive(run_id: str, hub: _Hub) -> None:
         hub.publish(_sse_step("round_start", {"round": 0, "phase": "draft"}))
         draft_ids = {p["lane_id"]: f"{run_id}:0:{p['lane_id']}" for p in panel}
         results = await _fan_out(
-            [_draft_job(hub, run_id, p, prompt, draft_ids[p["lane_id"]]) for p in panel],
+            [_draft_job(hub, run_id, p, prompt, draft_ids[p["lane_id"]], evidence) for p in panel],
             concurrency,
         )
         calls += len(results)
@@ -736,6 +907,35 @@ async def _drive(run_id: str, hub: _Hub) -> None:
         if not outputs:
             raise RuntimeError("no panelist produced an answer")
         round_history.append(dict(outputs))
+
+        # ---- Quick mode: vote on the drafts and stop --------------------------------
+        # No critique rounds. This is the cheap arm, and the one everything else is
+        # measured against.
+        if quick:
+            vote, vote_calls = await _run_vote(hub, run_id, panel, prompt, outputs)
+            calls += vote_calls
+            if vote:
+                _save(run_id, vote_json=vote)
+                winner = vote.get("winner_lane_id")
+                if winner and outputs.get(winner):
+                    synthesis_text = _answer_of(outputs[winner])
+                    _save(run_id, synthesis=synthesis_text)
+                    hub.publish(
+                        _sse_step(
+                            "synthesis_done",
+                            {
+                                "answer": synthesis_text,
+                                "minority_report": None,
+                                "do_now": [],
+                                "consider_later": [],
+                                "skip": [],
+                                "critique": None,
+                                "source": "vote",
+                            },
+                        )
+                    )
+            status = "voted"
+            raise _Finished
 
         # ---- Rounds 1..N: peer review ----------------------------------------------
         round_index = 0
@@ -882,6 +1082,8 @@ async def _drive(run_id: str, hub: _Hub) -> None:
                         },
                     )
                 )
+    except _Finished:
+        pass
     except Exception as exc:  # noqa: BLE001
         status = "failed"
         _save(run_id, error=str(exc))

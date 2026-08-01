@@ -119,6 +119,7 @@ def _migrate() -> None:
         "integrations": {"eula_accepted": "BOOLEAN DEFAULT 0"},
         "attachments": {"extracted_text": "TEXT"},
         "lane_messages": {"ttft_ms": "INTEGER"},
+        "deliberation_runs": {"vote_json": "JSON"},
     }
     insp = inspect(engine)
     existing_tables = set(insp.get_table_names())

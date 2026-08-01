@@ -7,7 +7,8 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session as DbSession
 
@@ -32,6 +33,16 @@ def _resolve_jwt_secret() -> str:
     """
     configured = (settings.JWT_SECRET or "").strip()
     if configured and configured not in _WEAK_SECRETS:
+        # RFC 7518 §3.2 wants an HMAC key at least as long as the hash output. Warn rather
+        # than override: silently swapping the secret would sign out everyone holding a
+        # valid token.
+        if len(configured.encode()) < 32:
+            logging.getLogger("uvicorn.error").warning(
+                "JWT_SECRET is only %d bytes; RFC 7518 recommends at least 32 for %s. "
+                "Consider rotating to a longer secret.",
+                len(configured.encode()),
+                settings.JWT_ALGORITHM,
+            )
         return configured
 
     path = os.path.join(settings.UPLOAD_DIR, ".jwt_secret")
@@ -109,7 +120,7 @@ def current_user(
         user_id = payload.get("sub")
         if not user_id:
             raise credentials_exc
-    except JWTError:
+    except PyJWTError:
         raise credentials_exc
 
     user = db.get(User, user_id)

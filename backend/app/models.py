@@ -384,6 +384,8 @@ class DeliberationRun(Base):
     config_json: Mapped[dict] = mapped_column(JSON, default=dict)
     # [{round, agreement, diversity, open_objections, verdicts, decision}]
     convergence_json: Mapped[list] = mapped_column(JSON, default=list)
+    # {ranking, winner_lane_id, ballots, voters} — quick mode's Borda result
+    vote_json: Mapped[dict] = mapped_column(JSON, default=dict)
     # {matrix, labels, influence, capitulation}
     metrics_json: Mapped[dict] = mapped_column(JSON, default=dict)
     synthesis: Mapped[str | None] = mapped_column(Text, nullable=True)

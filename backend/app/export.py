@@ -347,3 +347,221 @@ def export_message_pdf(
     doc.build(story, canvasmaker=_numbered_canvas(f"{title} \u00b7 {model}", fonts["body"]))
     download_name = safe_download_name(f"{title}-{model}", "pdf", fallback="response")
     return stored_name, download_name, _MIME["pdf"]
+
+
+# ---------------------------------------------------------------------------
+# Deliberation export: the whole panel record, not just the answer
+# ---------------------------------------------------------------------------
+
+
+def export_deliberation_pdf(db: DbSession, run) -> tuple[str, str, str]:
+    """Export a deliberation as a US Letter PDF: rounds, objections, synthesis, dissent.
+
+    The point of the document is the middle section. Anyone can get an answer from one
+    model; what this records is which claims were challenged, by whom, and what never got
+    resolved.
+    """
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer
+    from reportlab.platypus.flowables import HRFlowable
+
+    from .markdown_render import markdown_pdf_flowables, pdf_fonts, pdf_safe
+    from .models import DeliberationStep, Session as ChatSession
+
+    fonts = pdf_fonts()
+    session = db.get(ChatSession, run.session_id)
+    title = (session.title if session else None) or "Deliberation"
+    lanes = {l.id: l for l in (session.lanes if session else [])}
+    steps = db.scalars(
+        select(DeliberationStep)
+        .where(DeliberationStep.run_id == run.id)
+        .order_by(DeliberationStep.round_index, DeliberationStep.created_at)
+    ).all()
+
+    styles = getSampleStyleSheet()
+    base = ParagraphStyle(
+        "Base", parent=styles["BodyText"], fontName=fonts["body"], fontSize=10,
+        leading=14.5, spaceAfter=6, textColor=colors.HexColor("#111827"),
+    )
+    brand = ParagraphStyle(
+        "Brand", parent=base, fontName=fonts["bold"], fontSize=8, leading=10,
+        textColor=colors.HexColor("#6366F1"), spaceAfter=2,
+    )
+    h_title = ParagraphStyle(
+        "T", parent=base, fontName=fonts["bold"], fontSize=19, leading=23,
+        textColor=colors.HexColor("#1E1B4B"), spaceAfter=3,
+    )
+    meta = ParagraphStyle(
+        "M", parent=base, fontSize=8.5, leading=12,
+        textColor=colors.HexColor("#64748B"), spaceAfter=2,
+    )
+    label = ParagraphStyle(
+        "L", parent=base, fontName=fonts["bold"], fontSize=7.5, leading=10,
+        textColor=colors.HexColor("#4F46E5"), spaceBefore=10, spaceAfter=3,
+    )
+    round_head = ParagraphStyle(
+        "RH", parent=base, fontName=fonts["bold"], fontSize=12, leading=15,
+        textColor=colors.HexColor("#1E1B4B"), spaceBefore=14, spaceAfter=4, keepWithNext=1,
+    )
+    model_head = ParagraphStyle(
+        "MH", parent=base, fontName=fonts["bold"], fontSize=10, leading=13,
+        textColor=colors.HexColor("#334155"), spaceBefore=8, spaceAfter=2,
+    )
+    reject = ParagraphStyle(
+        "RJ", parent=base, fontSize=8.5, leading=11.5, leftIndent=10,
+        textColor=colors.HexColor("#9F1239"), spaceAfter=1,
+    )
+    small = ParagraphStyle("S", parent=base, fontSize=8.5, leading=11.5, spaceAfter=2)
+
+    stored_name = new_stored_name("pdf")
+    path = os.path.join(generated_dir(), stored_name)
+    doc = SimpleDocTemplate(
+        path, pagesize=LETTER, topMargin=0.7 * 72, bottomMargin=0.85 * 72,
+        leftMargin=_PAGE_MARGIN, rightMargin=_PAGE_MARGIN,
+        title=f"Deliberation - {title}", author="MultiChat",
+    )
+    width = doc.width
+
+    panel = [l for l in lanes.values() if l.role == "responder"]
+    status_line = (
+        f"{'converged' if run.converged else run.status.replace('_', ' ')} \u00b7 "
+        f"{run.rounds_used} round(s) \u00b7 {run.total_calls} model calls \u00b7 "
+        f"{run.wall_ms / 1000:.0f}s"
+    )
+    story: list = [
+        Paragraph("MULTICHAT \u00b7 MODEL DELIBERATION", brand),
+        Paragraph(escape(pdf_safe(title)), h_title),
+        Paragraph(escape(pdf_safe(status_line)), meta),
+        Paragraph(
+            escape(pdf_safe("Panel: " + ", ".join(sorted(l.model for l in panel)))), meta
+        ),
+        Spacer(1, 12),
+        _accent_card(
+            [Paragraph("QUESTION", label), Paragraph(escape(pdf_safe(run.prompt or "")), base)],
+            width, bg="#EEF2FF", accent="#6366F1",
+        ),
+        Spacer(1, 6),
+    ]
+
+    traces = {t.get("round"): t for t in (run.convergence_json or [])}
+    rounds = sorted({s.round_index for s in steps if s.round_index < 90})
+    last_round = rounds[-1] if rounds else 0
+    for round_index in rounds:
+        heading = (
+            "Round 0 \u2014 independent drafts"
+            if round_index == 0
+            else f"Round {round_index} \u2014 peer review"
+        )
+        # Intermediate rounds carry only what changed. Reprinting every full answer for
+        # every round triples the page count without adding audit value — the objections
+        # are the record, and the final wording is shown in full below.
+        full_body = round_index in (0, last_round)
+        story.append(Paragraph(heading, round_head))
+        if not full_body:
+            story.append(
+                Paragraph(
+                    escape(pdf_safe("Objections raised this round; revised wording is shown "
+                                    "in the final round below.")),
+                    meta,
+                )
+            )
+        for step in [s for s in steps if s.round_index == round_index]:
+            if step.phase not in ("draft", "critique"):
+                continue
+            model = step.model or (lanes[step.lane_id].model if step.lane_id in lanes else "model")
+            verdict = f"  [{step.verdict}]" if step.verdict else ""
+            story.append(Paragraph(escape(pdf_safe(model + verdict)), model_head))
+            if step.error:
+                story.append(Paragraph(escape(pdf_safe(f"failed: {step.error}")), reject))
+                continue
+            output = step.output_json or {}
+            rejected = [r for r in (output.get("rejected_claims") or []) if isinstance(r, dict)]
+            if rejected:
+                story.append(Paragraph("Rejected:", small))
+                for item in rejected:
+                    story.append(
+                        Paragraph(
+                            escape(pdf_safe(f"\u2717 {item.get('claim_id')} \u2014 {item.get('reason')}")),
+                            reject,
+                        )
+                    )
+            elif step.phase == "critique":
+                story.append(Paragraph(escape(pdf_safe("No objections raised.")), small))
+            body = str(output.get("revised_answer") or output.get("answer") or "")
+            if body and full_body:
+                story.extend(markdown_pdf_flowables(body, base, content_width=width))
+        trace = traces.get(round_index)
+        if trace:
+            summary = (
+                f"{len(trace.get('approvals') or [])}/{len(trace.get('responded') or [])} approved "
+                f"\u00b7 {trace.get('open_objection_count', 0)} open objection(s) "
+                f"\u00b7 claim overlap {round((trace.get('claim_overlap') or 0) * 100)}%"
+            )
+            story.append(
+                _accent_card(
+                    [Paragraph(escape(pdf_safe(summary)), small)],
+                    width, bg="#F1F5F9", accent="#94A3B8",
+                )
+            )
+            story.append(Spacer(1, 4))
+
+    if run.synthesis:
+        story.append(
+            HRFlowable(width="100%", thickness=0.8, color=colors.HexColor("#C7D2FE"),
+                       spaceBefore=14, spaceAfter=8)
+        )
+        story.append(Paragraph("SYNTHESIS", label))
+        story.extend(markdown_pdf_flowables(run.synthesis, base, content_width=width))
+
+    if run.minority_report:
+        story.append(Spacer(1, 8))
+        # The dissent is Markdown like any other model output — render it, don't dump it.
+        story.append(
+            _accent_card(
+                [Paragraph("MINORITY REPORT \u2014 WHAT THE PANEL DID NOT SETTLE", label)]
+                + markdown_pdf_flowables(
+                    run.minority_report, small, content_width=width - 24
+                ),
+                width, bg="#FFFBEB", accent="#F59E0B",
+            )
+        )
+
+    extraction = run.extraction_json or {}
+    for heading, key in (("Do now", "do_now"), ("Consider later", "consider_later"), ("Skip", "skip")):
+        items = [str(i) for i in (extraction.get(key) or []) if str(i).strip()]
+        if not items:
+            continue
+        block = [Paragraph(heading.upper(), label)]
+        block += [Paragraph(escape(pdf_safe(f"\u2022 {i}")), small) for i in items]
+        story.append(KeepTogether(block))
+
+    metrics = run.metrics_json or {}
+    influence = metrics.get("influence") or {}
+    capitulation = metrics.get("capitulation") or {}
+    if influence or capitulation:
+        rows = [Paragraph("PANEL METRICS", label)]
+        for lane_id, value in sorted(influence.items(), key=lambda kv: -kv[1]):
+            model = lanes[lane_id].model if lane_id in lanes else lane_id[:8]
+            cap = capitulation.get(lane_id)
+            text = f"{model} \u2014 influence {round(value * 100)}%"
+            if cap is not None:
+                text += f", capitulation {cap:.2f}"
+            rows.append(Paragraph(escape(pdf_safe(text)), small))
+        rows.append(
+            Paragraph(
+                escape(
+                    pdf_safe(
+                        "Influence = share of peer-accepted claims. Capitulation = changed "
+                        "position without naming what changed its mind (lower is better)."
+                    )
+                ),
+                meta,
+            )
+        )
+        story.append(KeepTogether(rows))
+
+    doc.build(story, canvasmaker=_numbered_canvas(f"Deliberation \u00b7 {title}", fonts["body"]))
+    download_name = safe_download_name(f"deliberation-{title}", "pdf", fallback="deliberation")
+    return stored_name, download_name, _MIME["pdf"]

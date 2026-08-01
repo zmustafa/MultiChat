@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session as DbSession
 
 from ..config import settings
 from ..db import get_db
+from ..benchmark import ARMS, run_benchmark
 from ..deliberation import is_running, request_stop, stream_run
 from ..models import (
     DeliberationRun,
@@ -48,10 +49,23 @@ class DeliberationCreate(BaseModel):
     synthesis: bool = True
     minority_report: bool = True
     critique_synthesis: bool = True
+    # "council" = full peer review; "quick" = draft + Borda vote (the cheap baseline)
+    mode: str = "council"
+    evidence: bool = False
 
 
 class ClassifyRequest(BaseModel):
     prompt: str
+
+
+class BenchmarkRequest(BaseModel):
+    """Head-to-head comparison of deliberation against the cheaper alternatives."""
+
+    prompts: list[str] = Field(default_factory=list)
+    participants: list[PanelMember] = Field(default_factory=list)
+    judge: PanelMember | None = None
+    max_rounds: int = settings.DELIBERATION_DEFAULT_ROUNDS
+    arms: list[str] = Field(default_factory=lambda: list(ARMS))
 
 
 def _get_run(db: DbSession, user: User, run_id: str) -> DeliberationRun:
@@ -82,6 +96,7 @@ def _serialize(db: DbSession, run: DeliberationRun) -> dict:
         "converged": run.converged,
         "config": run.config_json or {},
         "convergence": run.convergence_json or [],
+        "vote": run.vote_json or {},
         "metrics": run.metrics_json or {},
         "synthesis": run.synthesis,
         "minority_report": run.minority_report,
@@ -204,6 +219,48 @@ def leaderboard(user: User = Depends(current_user), db: DbSession = Depends(get_
     }
 
 
+@router.post("/benchmark")
+def benchmark(
+    payload: BenchmarkRequest,
+    user: User = Depends(current_user),
+    db: DbSession = Depends(get_db),
+) -> StreamingResponse:
+    """Run deliberation head-to-head against single / vote / synthesize on real prompts.
+
+    This is the decision gate for the whole feature: if the council arm does not beat the
+    cheap arms on the user's own questions, the extra calls are not buying anything and the
+    honest answer is to use Quick mode.
+    """
+    prompts = [p.strip() for p in payload.prompts if p.strip()][:10]
+    if not prompts:
+        raise HTTPException(status_code=400, detail="Add at least one prompt")
+    if len(payload.participants) < 2:
+        raise HTTPException(status_code=400, detail="Pick at least two models for the panel")
+    judge_ref = payload.judge or payload.participants[0]
+    for member in payload.participants + [judge_ref]:
+        provider = db.get(Provider, member.provider_id)
+        if not provider or provider.user_id != user.id:
+            raise HTTPException(status_code=400, detail="Unknown provider")
+
+    panel = [
+        {
+            "key": f"p{i}",
+            "provider_id": m.provider_id,
+            "model": m.model,
+        }
+        for i, m in enumerate(payload.participants)
+    ]
+    judge = {"key": "judge", "provider_id": judge_ref.provider_id, "model": judge_ref.model}
+    arms = [a for a in payload.arms if a in ARMS] or list(ARMS)
+    rounds = max(1, min(payload.max_rounds, settings.DELIBERATION_MAX_ROUNDS))
+
+    async def events():
+        async for frame in run_benchmark(prompts, panel, judge, rounds, arms):
+            yield frame
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
 @router.get("/by-session/{session_id}")
 def get_by_session(
     session_id: str, user: User = Depends(current_user), db: DbSession = Depends(get_db)
@@ -287,8 +344,12 @@ def create_deliberation(
         if not provider or provider.user_id != user.id:
             raise HTTPException(status_code=400, detail="Unknown provider")
 
-    title = (payload.title or prompt)[:80]
-    session = ChatSession(user_id=user.id, title=title, mode="deliberation")
+    title = (payload.title or "").strip()
+    if not title:
+        # The prompt doubles as the title; add an ellipsis so a long one doesn't look
+        # like it was cut off by a bug.
+        title = prompt if len(prompt) <= 70 else prompt[:69].rstrip() + "\u2026"
+    session = ChatSession(user_id=user.id, title=title[:80], mode="deliberation")
     db.add(session)
     db.flush()
 
@@ -330,6 +391,8 @@ def create_deliberation(
             "synthesis": payload.synthesis,
             "minority_report": payload.minority_report,
             "critique_synthesis": payload.critique_synthesis,
+            "mode": "quick" if payload.mode == "quick" else "council",
+            "evidence": payload.evidence,
         },
     )
     db.add(run)
@@ -420,6 +483,37 @@ def continue_in_chat(
     )
     db.commit()
     return {"session_id": chat.id}
+
+
+@router.post("/{run_id}/export")
+def export_run(
+    run_id: str, user: User = Depends(current_user), db: DbSession = Depends(get_db)
+) -> dict:
+    """Export the whole deliberation — rounds, objections, synthesis, dissent — as a PDF."""
+    import os
+
+    from ..export import export_deliberation_pdf
+    from ..models import GeneratedFile
+
+    run = _get_run(db, user, run_id)
+    try:
+        stored_name, download_name, mime = export_deliberation_pdf(db, run)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Export failed: {exc}")
+    path = os.path.join(settings.UPLOAD_DIR, "generated", stored_name)
+    db.add(
+        GeneratedFile(
+            user_id=user.id,
+            session_id=run.session_id,
+            stored_name=stored_name,
+            download_name=download_name,
+            mime_type=mime,
+            size_bytes=os.path.getsize(path) if os.path.exists(path) else 0,
+            kind="pdf",
+        )
+    )
+    db.commit()
+    return {"url": f"/api/files/{stored_name}?name={download_name}", "download_name": download_name}
 
 
 @router.delete("/{run_id}", status_code=204)

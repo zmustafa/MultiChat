@@ -17,7 +17,7 @@ export interface StepOutput {
   revised_answer?: string;
   reasoning_summary?: string;
   assumptions?: string[];
-  claims?: { id?: string; text?: string; kind?: string }[];
+  claims?: { id?: string; text?: string; kind?: string; support?: string | null }[];
   confidence?: number | null;
   verdict?: string;
   accepted_claims?: { peer?: string; claim_id?: string; note?: string }[];
@@ -77,6 +77,13 @@ export interface PanelMetrics {
   final_diversity?: number | null;
 }
 
+export interface VoteResult {
+  ranking: { lane_id: string; label: string; score: number; first_place_votes: number }[];
+  winner_lane_id: string | null;
+  ballots: Record<string, string[]>;
+  voters: number;
+}
+
 export interface DeliberationRun {
   id: string;
   session_id: string;
@@ -89,6 +96,7 @@ export interface DeliberationRun {
   converged: boolean;
   config: Record<string, unknown>;
   convergence: ConvergenceTrace[];
+  vote: VoteResult | Record<string, never>;
   metrics: PanelMetrics;
   synthesis: string | null;
   minority_report: string | null;
@@ -111,6 +119,9 @@ export interface CreateDeliberationBody {
   synthesis: boolean;
   minority_report: boolean;
   critique_synthesis: boolean;
+  /** "council" = full peer review; "quick" = draft + Borda vote (the cheap baseline). */
+  mode?: "council" | "quick";
+  evidence?: boolean;
 }
 
 export function createDeliberation(body: CreateDeliberationBody) {
@@ -176,4 +187,52 @@ export function classifyPrompt(prompt: string) {
 /** The answer body a step settled on, whichever phase produced it. */
 export function stepAnswer(step: DeliberationStep): string {
   return (step.output.revised_answer || step.output.answer || "").trim();
+}
+
+/** Factual claims asserted with no stated basis — only meaningful in evidence mode. */
+export function unsupportedFacts(step: DeliberationStep): number {
+  return (step.output.claims ?? []).filter(
+    (c) => (c.kind || "").toLowerCase() === "fact" && !(c.support || "").trim(),
+  ).length;
+}
+
+export function exportDeliberationPdf(runId: string) {
+  return apiFetch<{ url: string; download_name: string }>(
+    `/api/deliberations/${runId}/export`,
+    { method: "POST" },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Benchmark — does deliberation beat the cheap alternatives?
+// ---------------------------------------------------------------------------
+
+export const BENCH_ARMS = ["single", "vote", "synthesize", "council"] as const;
+export type BenchArm = (typeof BENCH_ARMS)[number];
+
+export const ARM_LABELS: Record<BenchArm, string> = {
+  single: "Single model",
+  vote: "Majority vote",
+  synthesize: "Synthesize only",
+  council: "Full deliberation",
+};
+
+export interface BenchSummary {
+  avg_scores: Record<string, number | null>;
+  wins: Record<string, number>;
+  prompts: number;
+  best_baseline: number | null;
+  council: number | null;
+  verdict: string;
+}
+
+export interface BenchRow {
+  prompt: string;
+  scores: Record<string, number>;
+  reasons?: Record<string, string>;
+  answers?: Record<string, string>;
+  calls: number;
+  council_rounds?: number;
+  council_converged?: boolean;
+  error?: string;
 }
