@@ -27,7 +27,9 @@ and no round can be carried by a single approval.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import os
 import random
 import time
 from collections.abc import AsyncIterator
@@ -54,6 +56,7 @@ from .models import (
     LaneMessage,
     Provider,
     Session as ChatSession,
+    Turn,
 )
 from .structured import call_structured
 
@@ -375,6 +378,48 @@ def _require_evidence(data: dict) -> str | None:
     return None
 
 
+def _image_part(att: Any) -> dict | None:
+    """An OpenAI-shaped image part for an attachment, or None if it isn't a usable image.
+
+    Providers each translate this shape into their own (Anthropic blocks, Responses
+    input_image), so the panel can mix vendors on the same picture.
+    """
+    if att.kind != "image":
+        return None
+    path = os.path.join(settings.UPLOAD_DIR, att.storage_path)
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as fh:
+        b64 = base64.b64encode(fh.read()).decode()
+    return {
+        "type": "image_url",
+        "image_url": {"url": f"data:{att.mime_type};base64,{b64}"},
+    }
+
+
+def _with_images(text: str, images: list[dict]) -> str | list[dict]:
+    """Attach the question's images to a prompt, keeping plain text when there are none."""
+    if not images:
+        return text
+    return [{"type": "text", "text": text}, *images]
+
+
+def _loggable(user: str | list[dict]) -> Any:
+    """Strip image bytes out of what gets persisted as the step's input.
+
+    A step row records the exact prompt so a surprising verdict can be traced, but base64
+    images would add megabytes per call for no forensic value.
+    """
+    if isinstance(user, str):
+        return user
+    return [
+        item
+        if item.get("type") != "image_url"
+        else {"type": "image_url", "image_url": {"url": "<image omitted>"}}
+        for item in user
+    ]
+
+
 def _validate_vote(candidates: list[str]):
     def check(data: dict) -> str | None:
         ranking = data.get("ranking")
@@ -434,7 +479,7 @@ async def _run_step(
     phase: str,
     label: str | None,
     system: str,
-    user: str,
+    user: str | list[dict],
     schema: str,
     required: tuple[str, ...],
     validate: Any,
@@ -492,7 +537,7 @@ async def _run_step(
             phase=phase,
             label=label,
             model=model,
-            input_json={"system": system, "user": user},
+            input_json={"system": system, "user": _loggable(user)},
             output_json=(result.data if result else {}),
             raw_text=(result.raw[:20000] if result else None),
             degraded=bool(result.degraded) if result else False,
@@ -585,6 +630,10 @@ def _load_context(run_id: str) -> dict | None:
         session = db.get(ChatSession, run.session_id)
         if session is None:
             return None
+        turn = db.get(Turn, run.turn_id)
+        # Read the images once here: every panelist and reviewer is shown the same
+        # question, and re-reading them from disk per call would be wasteful.
+        images = [part for att in (turn.attachments if turn else []) if (part := _image_part(att))]
         lanes = sorted(session.lanes, key=lambda l: l.position)
         providers = {p.id: p for p in db.scalars(select(Provider)).all()}
         panel = [
@@ -612,6 +661,7 @@ def _load_context(run_id: str) -> dict | None:
         )
         return {
             "prompt": run.prompt,
+            "images": images,
             "config": dict(run.config_json or {}),
             "panel": panel,
             "judge": judge,
@@ -651,7 +701,15 @@ def _set_lane_states(lane_ids: list[str], state: str) -> None:
         db.close()
 
 
-def _draft_job(hub: _Hub, run_id: str, participant: dict, prompt: str, step_id: str, evidence: bool = False) -> Any:
+def _draft_job(
+    hub: _Hub,
+    run_id: str,
+    participant: dict,
+    prompt: str,
+    step_id: str,
+    evidence: bool = False,
+    images: list[dict] | None = None,
+) -> Any:
     async def job() -> dict:
         hub.publish(
             _sse_step(
@@ -674,7 +732,7 @@ def _draft_job(hub: _Hub, run_id: str, participant: dict, prompt: str, step_id: 
             phase="draft",
             label=None,
             system=DRAFT_SYSTEM + (_EVIDENCE_NOTE if evidence else ""),
-            user=f"QUESTION:\n{prompt}",
+            user=_with_images(f"QUESTION:\n{prompt}", images or []),
             schema=DRAFT_SCHEMA,
             required=("answer",),
             validate=_require_evidence if evidence else None,
@@ -694,14 +752,18 @@ def _critique_job(
     peers: list[tuple[str, str, dict]],
     round_index: int,
     step_id: str,
+    images: list[dict] | None = None,
 ) -> Any:
     """``peers`` is [(label, letter, output)] already shuffled for this viewer."""
     blocks = "\n".join(_peer_block(label, output, letter) for label, letter, output in peers)
-    user = (
+    # Reviewers see the images too: catching a peer who misread a chart is exactly the
+    # kind of error peer review is here to find.
+    user = _with_images(
         f"QUESTION:\n{prompt}\n\n"
         f"YOUR PREVIOUS ANSWER:\n{_truncate(_answer_of(own))}\n\n"
         f"YOUR CLAIMS:\n{_claim_lines(own, 'self')}\n\n"
-        f"PEER ANSWERS (anonymized — {len(peers)} peer(s)):\n{blocks}"
+        f"PEER ANSWERS (anonymized — {len(peers)} peer(s)):\n{blocks}",
+        images or [],
     )
 
     async def job() -> dict:
@@ -893,6 +955,7 @@ async def _drive(run_id: str, hub: _Hub) -> None:
         return
 
     prompt: str = context["prompt"]
+    images: list[dict] = context["images"]
     config: dict = context["config"]
     panel: list[dict] = context["panel"]
     judge: dict | None = context["judge"]
@@ -934,7 +997,10 @@ async def _drive(run_id: str, hub: _Hub) -> None:
         hub.publish(_sse_step("round_start", {"round": 0, "phase": "draft"}))
         draft_ids = {p["lane_id"]: f"{run_id}:0:{p['lane_id']}" for p in panel}
         results = await _fan_out(
-            [_draft_job(hub, run_id, p, prompt, draft_ids[p["lane_id"]], evidence) for p in panel],
+            [
+                _draft_job(hub, run_id, p, prompt, draft_ids[p["lane_id"]], evidence, images)
+                for p in panel
+            ],
             concurrency,
         )
         calls += len(results)
@@ -1009,6 +1075,7 @@ async def _drive(run_id: str, hub: _Hub) -> None:
                         peers,
                         round_index,
                         f"{run_id}:{round_index}:{participant['lane_id']}",
+                        images,
                     )
                 )
             if not jobs:

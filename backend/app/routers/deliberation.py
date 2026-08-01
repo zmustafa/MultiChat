@@ -20,6 +20,7 @@ from ..db import get_db
 from ..benchmark import ARMS, run_benchmark
 from ..deliberation import is_running, request_stop, stream_run
 from ..models import (
+    Attachment,
     DeliberationRun,
     DeliberationStep,
     Lane,
@@ -52,6 +53,8 @@ class DeliberationCreate(BaseModel):
     # "council" = full peer review; "quick" = draft + Borda vote (the cheap baseline)
     mode: str = "council"
     evidence: bool = False
+    # Images uploaded via /api/uploads and shown to the panel alongside the question.
+    attachment_ids: list[str] = Field(default_factory=list)
 
 
 class ClassifyRequest(BaseModel):
@@ -79,6 +82,7 @@ def _serialize(db: DbSession, run: DeliberationRun) -> dict:
     session = db.get(ChatSession, run.session_id)
     lanes = sorted(session.lanes, key=lambda l: l.position) if session else []
     providers = {p.id: p for p in db.scalars(select(Provider)).all()}
+    turn = db.get(Turn, run.turn_id)
     steps = db.scalars(
         select(DeliberationStep)
         .where(DeliberationStep.run_id == run.id)
@@ -92,6 +96,11 @@ def _serialize(db: DbSession, run: DeliberationRun) -> dict:
         "status": run.status,
         "running": is_running(run.id),
         "prompt": run.prompt,
+        "images": [
+            {"id": a.id, "filename": a.filename, "url": f"/api/uploads/{a.id}"}
+            for a in (turn.attachments if turn else [])
+            if a.kind == "image"
+        ],
         "rounds_used": run.rounds_used,
         "converged": run.converged,
         "config": run.config_json or {},
@@ -377,6 +386,13 @@ def create_deliberation(
     turn = Turn(session_id=session.id, order_index=0, content=prompt)
     db.add(turn)
     db.flush()
+
+    # Bind any uploaded images to the question turn, so every panelist sees them.
+    for att_id in payload.attachment_ids:
+        att = db.get(Attachment, att_id)
+        if att and att.user_id == user.id:
+            att.turn_id = turn.id
+            db.add(att)
 
     run = DeliberationRun(
         user_id=user.id,

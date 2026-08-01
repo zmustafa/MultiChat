@@ -371,6 +371,20 @@ export function DeliberationView({ runId }: { runId: string }) {
               <div className="whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-100">
                 {run?.prompt ?? ""}
               </div>
+              {!!run?.images?.length && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {run.images.map((img) => (
+                    <a key={img.id} href={mediaUrl(img.url)} target="_blank" rel="noreferrer">
+                      <img
+                        src={mediaUrl(img.url)}
+                        alt={img.filename}
+                        title={img.filename}
+                        className="h-20 rounded border border-gray-300 object-cover dark:border-gray-600"
+                      />
+                    </a>
+                  ))}
+                </div>
+              )}
             </div>
 
             {rounds.map((round) => {

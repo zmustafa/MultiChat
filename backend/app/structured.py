@@ -157,7 +157,7 @@ async def call_structured(
     model: str,
     *,
     system: str,
-    user: str,
+    user: str | list[dict[str, Any]],
     schema: str,
     required: Sequence[str] = (),
     validate: Callable[[dict], str | None] | None = None,

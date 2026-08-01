@@ -92,6 +92,7 @@ export interface DeliberationRun {
   status: string;
   running: boolean;
   prompt: string;
+  images: { id: string; filename: string; url: string }[];
   rounds_used: number;
   converged: boolean;
   config: Record<string, unknown>;
@@ -122,6 +123,8 @@ export interface CreateDeliberationBody {
   /** "council" = full peer review; "quick" = draft + Borda vote (the cheap baseline). */
   mode?: "council" | "quick";
   evidence?: boolean;
+  /** Images uploaded via /api/uploads, shown to the panel alongside the question. */
+  attachment_ids?: string[];
 }
 
 export function createDeliberation(body: CreateDeliberationBody) {

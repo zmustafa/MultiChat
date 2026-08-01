@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
+import { apiFetch, mediaUrl } from "../api/client";
+import type { Attachment } from "../api/types";
 import { useProviders } from "../hooks/useProviders";
 import { usePersonas } from "../hooks/usePersonas";
 import { resolvePersonaLanes } from "../utils/personaLanes";
@@ -56,6 +58,10 @@ export function DeliberationLaunch({ personaId }: { personaId: string | null }) 
   const [synthesis, setSynthesis] = useState(true);
   const [critiqueSynthesis, setCritiqueSynthesis] = useState(true);
   const [prompt, setPrompt] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [showAdjust, setShowAdjust] = useState(false);
@@ -153,6 +159,26 @@ export function DeliberationLaunch({ personaId }: { personaId: string | null }) 
     );
   }
 
+  async function uploadFiles(files: File[]) {
+    const images = files.filter((f) => f.type.startsWith("image/"));
+    if (!images.length) return;
+    setUploading(true);
+    try {
+      const form = new FormData();
+      images.forEach((f) => form.append("files", f));
+      const res = await apiFetch<Attachment[]>("/api/uploads", {
+        method: "POST",
+        body: form,
+      });
+      setAttachments((prev) => [...prev, ...res]);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
   async function start() {
     setError("");
     if (chosen.length < 2) return setError("Pick at least two models for the panel.");
@@ -173,6 +199,7 @@ export function DeliberationLaunch({ personaId }: { personaId: string | null }) 
         critique_synthesis: critiqueSynthesis,
         mode,
         evidence,
+        attachment_ids: attachments.map((a) => a.id),
       });
       navigate(`/d/${res.run_id}`);
     } catch (e) {
@@ -206,19 +233,92 @@ export function DeliberationLaunch({ personaId }: { personaId: string | null }) 
             <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
               Your question
             </label>
-            <textarea
-              autoFocus
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void start();
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
               }}
-              rows={5}
-              placeholder="Ask something where reasonable experts could disagree…"
-              className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800"
-            />
-            <div className="mt-1 text-[11px] text-gray-400">
-              {navigator.platform.includes("Mac") ? "⌘" : "Ctrl"}+Enter to start
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+                void uploadFiles(Array.from(e.dataTransfer.files));
+              }}
+              className={`relative mt-1 rounded-lg border ${
+                dragOver ? "border-brand border-dashed" : "border-gray-300 dark:border-gray-600"
+              } dark:bg-gray-800`}
+            >
+              {attachments.length > 0 && (
+                <div className="flex flex-wrap gap-2 p-2 pb-0">
+                  {attachments.map((a) => (
+                    <div key={a.id} className="relative">
+                      <img
+                        src={mediaUrl(a.url)}
+                        alt={a.filename}
+                        className="h-16 rounded border border-gray-200 object-cover dark:border-gray-700"
+                      />
+                      <button
+                        onClick={() =>
+                          setAttachments((prev) => prev.filter((x) => x.id !== a.id))
+                        }
+                        title="Remove"
+                        className="absolute -right-1.5 -top-1.5 rounded-full bg-gray-700 px-1 text-[10px] text-white"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <textarea
+                autoFocus
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                onPaste={(e) => {
+                  const files = Array.from(e.clipboardData?.items || [])
+                    .filter((i) => i.kind === "file")
+                    .map((i) => i.getAsFile())
+                    .filter((f): f is File => !!f);
+                  if (files.length) void uploadFiles(files);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void start();
+                }}
+                rows={5}
+                placeholder="Ask something where reasonable experts could disagree…"
+                className="w-full resize-none bg-transparent px-3 py-2 text-sm focus:outline-none"
+              />
+              {dragOver && (
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-lg bg-brand/5 text-xs text-brand">
+                  Drop images to attach
+                </div>
+              )}
+            </div>
+            <div className="mt-1 flex items-center gap-2 text-[11px] text-gray-400">
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/*"
+                multiple
+                hidden
+                onChange={(e) => void uploadFiles(Array.from(e.target.files ?? []))}
+              />
+              <button
+                onClick={() => fileRef.current?.click()}
+                disabled={uploading}
+                className="rounded border border-gray-300 px-2 py-0.5 text-gray-600 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+              >
+                {uploading ? "Uploading…" : "📎 Add image"}
+              </button>
+              <span>
+                {navigator.platform.includes("Mac") ? "⌘" : "Ctrl"}+Enter to start
+                {attachments.length > 0 &&
+                  ` · every panelist and reviewer sees ${
+                    attachments.length === 1 ? "the image" : "all images"
+                  }`}
+              </span>
             </div>
           </div>
 
