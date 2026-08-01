@@ -361,7 +361,9 @@ export function DeliberationView({ runId }: { runId: string }) {
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          <div className="mx-auto max-w-5xl space-y-3">
+          {/* Full width on purpose: panelists sit side by side, so every extra pixel buys
+              a wider column per model, and the synthesis usually carries a comparison table. */}
+          <div className="space-y-3">
             <div className="rounded-lg border-l-4 border-brand bg-indigo-50 px-3 py-2 dark:bg-indigo-950/40">
               <div className="text-[10px] font-semibold uppercase tracking-wide text-brand">
                 Question
