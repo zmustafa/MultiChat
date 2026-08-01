@@ -319,10 +319,20 @@ export function SessionSidebar({
                     <button
                       key={d.id}
                       onClick={() => navigate(`/d/${d.id}`)}
-                      className="block w-full px-3 py-1.5 text-left hover:bg-gray-100 dark:hover:bg-gray-800"
+                      className={`block w-full px-3 py-1.5 text-left ${
+                        location.pathname === `/d/${d.id}`
+                          ? "bg-brand/10"
+                          : "hover:bg-gray-100 dark:hover:bg-gray-800"
+                      }`}
                       title={d.prompt}
                     >
-                      <span className="block truncate text-sm text-gray-700 dark:text-gray-200">
+                      <span
+                        className={`block truncate text-sm ${
+                          location.pathname === `/d/${d.id}`
+                            ? "text-brand"
+                            : "text-gray-700 dark:text-gray-200"
+                        }`}
+                      >
                         {d.prompt || "Deliberation"}
                       </span>
                       <span className="block truncate text-[11px] text-gray-400">

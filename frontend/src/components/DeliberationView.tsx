@@ -1,9 +1,8 @@
 import { useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router";
-import { MessageRenderer } from "../components/MessageRenderer";
-import { TextDiff } from "../components/TextDiff";
-import { DeliberationAnalysis } from "../components/DeliberationAnalysis";
-import { ThemeToggle } from "../components/ThemeToggle";
+import { useNavigate } from "react-router";
+import { MessageRenderer } from "./MessageRenderer";
+import { TextDiff } from "./TextDiff";
+import { DeliberationAnalysis } from "./DeliberationAnalysis";
 import { continueInChat, exportDeliberationPdf, stepAnswer, stopDeliberation, unsupportedFacts } from "../api/deliberation";
 import type { ConvergenceTrace, DeliberationStep, VoteResult } from "../api/deliberation";
 import { mergeSteps, useDeliberation } from "../hooks/useDeliberation";
@@ -252,10 +251,13 @@ function VotePanel({
   );
 }
 
-export function DeliberationPage() {
-  const { runId } = useParams();
+/**
+ * A deliberation panel, rendered inline in the main content area alongside the chat
+ * sidebar — clicking a deliberation should feel like opening a chat, not leaving the app.
+ */
+export function DeliberationView({ runId }: { runId: string }) {
   const navigate = useNavigate();
-  const { live, run, refresh } = useDeliberation(runId ?? null);
+  const { live, run, refresh } = useDeliberation(runId);
   const [showAnalysis, setShowAnalysis] = useState(false);
   const [busy, setBusy] = useState("");
 
@@ -292,14 +294,12 @@ export function DeliberationPage() {
     Object.values(live.steps).find((s) => s.round === round && s.laneId === laneId);
 
   async function onStop() {
-    if (!runId) return;
     setBusy("stop");
     await stopDeliberation(runId).catch(() => undefined);
     setBusy("");
   }
 
   async function onContinue() {
-    if (!runId) return;
     setBusy("continue");
     try {
       const res = await continueInChat(runId);
@@ -311,7 +311,6 @@ export function DeliberationPage() {
   }
 
   async function onExport() {
-    if (!runId) return;
     setBusy("export");
     try {
       const res = await exportDeliberationPdf(runId);
@@ -327,18 +326,10 @@ export function DeliberationPage() {
     setBusy("");
   }
 
-  if (!runId) return null;
-
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex min-h-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-2 border-b border-gray-200 px-3 py-2 dark:border-gray-700">
-          <button
-            onClick={() => navigate("/")}
-            className="rounded px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
-          >
-            ← Chats
-          </button>
           <span className="truncate text-sm font-semibold text-gray-800 dark:text-gray-100">
             ⚖️ {run?.title || "Deliberation"}
           </span>
@@ -366,7 +357,6 @@ export function DeliberationPage() {
             >
               {busy === "export" ? "…" : "⬇ PDF"}
             </button>
-            <ThemeToggle />
           </span>
         </header>
 

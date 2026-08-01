@@ -7,7 +7,6 @@ import { DefaultPasswordPrompt } from "./components/DefaultPasswordPrompt";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { ComparePage } from "./pages/ComparePage";
 import { BenchmarkPage } from "./pages/BenchmarkPage";
-import { DeliberationPage } from "./pages/DeliberationPage";
 import { EvalsPage } from "./pages/EvalsPage";
 import { GeneralSettingsPage } from "./pages/GeneralSettingsPage";
 import { SecuritySettingsPage } from "./pages/SecuritySettingsPage";
@@ -79,7 +78,7 @@ export default function App() {
         element={
           <Protected>
             <RequireProvider>
-              <DeliberationPage />
+              <ComparePage />
             </RequireProvider>
           </Protected>
         }

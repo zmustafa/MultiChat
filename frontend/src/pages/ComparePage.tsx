@@ -6,6 +6,7 @@ import type { LaneRole, Persona } from "../api/types";
 import { CommandPalette } from "../components/CommandPalette";
 import { ArtifactPanel } from "../components/ArtifactPanel";
 import { CompareGrid } from "../components/CompareGrid";
+import { DeliberationView } from "../components/DeliberationView";
 import { DiffView } from "../components/DiffView";
 import { InsightsPanel } from "../components/InsightsPanel";
 import { FilesPanel } from "../components/FilesPanel";
@@ -57,7 +58,7 @@ export function ComparePage() {
   // The active chat is identified by the URL (/c/:sessionId), so every chat has a
   // permanent, shareable/bookmarkable link. localStorage only remembers the last
   // chat to restore when landing on "/".
-  const { sessionId } = useParams<{ sessionId: string }>();
+  const { sessionId, runId } = useParams<{ sessionId: string; runId: string }>();
   const activeId = sessionId ?? null;
   const setActiveId = useCallback(
     (id: string | null) => {
@@ -180,12 +181,13 @@ export function ComparePage() {
   }, [activeId, session]);
 
   // When landing on "/" with no chat selected, restore the last-opened chat (if any)
-  // so its permanent link is reflected in the URL.
+  // so its permanent link is reflected in the URL. A deliberation (/d/:runId) is its
+  // own destination, so don't yank the user out of it.
   useEffect(() => {
-    if (sessionId) return;
+    if (sessionId || runId) return;
     const last = localStorage.getItem("multichat_active");
     if (last) nav(`/c/${last}`, { replace: true });
-  }, [sessionId, nav]);
+  }, [sessionId, runId, nav]);
 
   const refresh = () => {
     if (activeId) qc.invalidateQueries({ queryKey: ["session", activeId] });
@@ -879,64 +881,76 @@ export function ComparePage() {
     nav("/settings/general");
   }
 
+  const sidebar = navCollapsed ? (
+    <div className="flex h-full w-11 shrink-0 flex-col items-center gap-1 border-r border-gray-200 bg-gray-50 py-2 dark:border-gray-700 dark:bg-gray-950">
+      <button
+        onClick={() => setNavCollapsed(false)}
+        title="Expand sidebar"
+        className="rounded p-1.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
+      >
+        ⏵
+      </button>
+      <button
+        onClick={() => newTopic()}
+        title="New chat"
+        className="rounded p-1.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
+      >
+        ✏️
+      </button>
+      <Link
+        to="/settings"
+        title="Settings"
+        className="rounded p-1.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
+      >
+        ⚙️
+      </Link>
+    </div>
+  ) : (
+    <SessionSidebar
+      sessions={sessions}
+      personas={personas}
+      activeId={activeId}
+      generatingIds={generatingIds}
+      onSelect={setActiveId}
+      onNew={newTopic}
+      onCollapse={() => setNavCollapsed(true)}
+      onRename={(id, title) => sm.update.mutate({ id, body: { title } })}
+      onDelete={(id) => {
+        if (id === activeId) {
+          // Auto-focus the next available chat: prefer the one just below the deleted
+          // chat, else the one just above, else clear if none remain.
+          const idx = sessions.findIndex((s) => s.id === id);
+          const pool = sessions.filter((s) => !s.trashed && s.id !== id);
+          const next =
+            pool.find((s) => sessions.indexOf(s) > idx) ||
+            [...pool].reverse().find((s) => sessions.indexOf(s) < idx) ||
+            pool[0] ||
+            null;
+          if (next) {
+            setActiveId(next.id);
+          } else {
+            localStorage.removeItem("multichat_active");
+            setActiveId(null);
+          }
+        }
+        sm.remove.mutate(id);
+      }}
+    />
+  );
+
+  // A deliberation opens in place of the lanes rather than on its own page, so the
+  // sidebar stays put and picking one feels like switching to any other conversation.
+  if (runId)
+    return (
+      <div className="flex h-full bg-white dark:bg-gray-950">
+        {sidebar}
+        <DeliberationView runId={runId} />
+      </div>
+    );
+
   return (
     <div className="flex h-full bg-white dark:bg-gray-950">
-      {navCollapsed ? (
-        <div className="flex h-full w-11 shrink-0 flex-col items-center gap-1 border-r border-gray-200 bg-gray-50 py-2 dark:border-gray-700 dark:bg-gray-950">
-          <button
-            onClick={() => setNavCollapsed(false)}
-            title="Expand sidebar"
-            className="rounded p-1.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
-          >
-            ⏵
-          </button>
-          <button
-            onClick={() => newTopic()}
-            title="New chat"
-            className="rounded p-1.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
-          >
-            ✏️
-          </button>
-          <Link
-            to="/settings"
-            title="Settings"
-            className="rounded p-1.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
-          >
-            ⚙️
-          </Link>
-        </div>
-      ) : (
-        <SessionSidebar
-          sessions={sessions}
-          personas={personas}
-          activeId={activeId}
-          generatingIds={generatingIds}
-          onSelect={setActiveId}
-          onNew={newTopic}
-          onCollapse={() => setNavCollapsed(true)}
-          onRename={(id, title) => sm.update.mutate({ id, body: { title } })}
-          onDelete={(id) => {
-            if (id === activeId) {
-              // Auto-focus the next available chat: prefer the one just below the deleted
-              // chat, else the one just above, else clear if none remain.
-              const idx = sessions.findIndex((s) => s.id === id);
-              const pool = sessions.filter((s) => !s.trashed && s.id !== id);
-              const next =
-                pool.find((s) => sessions.indexOf(s) > idx) ||
-                [...pool].reverse().find((s) => sessions.indexOf(s) < idx) ||
-                pool[0] ||
-                null;
-              if (next) {
-                setActiveId(next.id);
-              } else {
-                localStorage.removeItem("multichat_active");
-                setActiveId(null);
-              }
-            }
-            sm.remove.mutate(id);
-          }}
-        />
-      )}
+      {sidebar}
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex flex-wrap items-center gap-2 border-b border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
