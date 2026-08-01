@@ -1,6 +1,11 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import type { Persona, PersonaLane, Provider } from "../api/types";
+import type {
+  DeliberationPreset,
+  Persona,
+  PersonaLane,
+  Provider,
+} from "../api/types";
 import { useAuth } from "../auth/AuthContext";
 import {
   usePersonaEnhance,
@@ -35,6 +40,7 @@ function PersonaEditor({
   const [systemPrompt, setSystemPrompt] = useState(p?.system_prompt || "");
   const [toolsEnabled, setToolsEnabled] = useState(p?.tools_enabled ?? true);
   const [lanes, setLanes] = useState<PersonaLane[]>(p?.lanes || []);
+  const [delib, setDelib] = useState<DeliberationPreset | null>(p?.deliberation ?? null);
   const [instruction, setInstruction] = useState("");
   const [enhanceNote, setEnhanceNote] = useState<string | null>(null);
 
@@ -65,6 +71,7 @@ function PersonaEditor({
       system_prompt: systemPrompt || null,
       tools_enabled: toolsEnabled,
       lanes,
+      deliberation: delib,
     };
     if (isNew) create.mutate(body, { onSuccess: onClose });
     else update.mutate({ id: p!.id, body }, { onSuccess: onClose });
@@ -257,6 +264,106 @@ function PersonaEditor({
             />
             Tools on by default
           </label>
+
+          {/* A persona with a preset opens a panel instead of a chat: the lanes above
+              become the panelists, and a lane with the judge role writes the synthesis. */}
+          <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+            <label className="flex items-center gap-1 text-xs font-medium text-gray-700 dark:text-gray-200">
+              <input
+                type="checkbox"
+                checked={!!delib}
+                onChange={(e) =>
+                  setDelib(
+                    e.target.checked
+                      ? {
+                          mode: "council",
+                          max_rounds: 2,
+                          synthesis: true,
+                          minority_report: true,
+                          critique_synthesis: true,
+                          evidence: false,
+                        }
+                      : null,
+                  )
+                }
+              />
+              ⚖️ Use this persona to start a deliberation
+            </label>
+            {delib && (
+              <div className="mt-3 space-y-3">
+                <div className="flex flex-wrap items-end gap-4">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-500">Mode</label>
+                    <select
+                      value={delib.mode}
+                      onChange={(e) =>
+                        setDelib({ ...delib, mode: e.target.value as "council" | "quick" })
+                      }
+                      className="rounded-lg border border-gray-300 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800"
+                    >
+                      <option value="quick">Quick — answer then vote</option>
+                      <option value="council">Council — peer review</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-500">
+                      Review rounds
+                    </label>
+                    <div className="flex gap-1">
+                      {[1, 2, 3].map((r) => (
+                        <button
+                          key={r}
+                          disabled={delib.mode === "quick"}
+                          onClick={() => setDelib({ ...delib, max_rounds: r })}
+                          className={`rounded border px-3 py-1 text-xs disabled:opacity-40 ${
+                            delib.max_rounds === r && delib.mode !== "quick"
+                              ? "border-brand bg-brand text-white"
+                              : "border-gray-300 dark:border-gray-600"
+                          }`}
+                        >
+                          {r}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-4 text-xs text-gray-600 dark:text-gray-300">
+                  <label className="flex items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={delib.synthesis}
+                      disabled={delib.mode === "quick"}
+                      onChange={(e) => setDelib({ ...delib, synthesis: e.target.checked })}
+                    />
+                    Synthesis + minority report
+                  </label>
+                  <label className="flex items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={delib.critique_synthesis}
+                      disabled={delib.mode === "quick" || !delib.synthesis}
+                      onChange={(e) =>
+                        setDelib({ ...delib, critique_synthesis: e.target.checked })
+                      }
+                    />
+                    Audit the synthesis
+                  </label>
+                  <label className="flex items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={delib.evidence}
+                      onChange={(e) => setDelib({ ...delib, evidence: e.target.checked })}
+                    />
+                    Require evidence on facts
+                  </label>
+                </div>
+                <p className="text-[11px] text-gray-400">
+                  The lanes above become the panel (2–5 models). A lane with the judge role
+                  writes the synthesis; without one the panel's runner-up does.
+                </p>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-5 py-3 dark:border-gray-700">
@@ -299,6 +406,11 @@ export function PersonaLibraryPage() {
   }, [personas, query]);
 
   async function startTopic(p: Persona) {
+    if (p.deliberation) {
+      // A panel needs its question first, so hand off to the compose screen.
+      nav(`/d/new?persona=${p.id}`);
+      return;
+    }
     const lanes = resolvePersonaLanes(p, providers);
     const created = await sm.create.mutateAsync({
       title: p.name,
@@ -324,6 +436,29 @@ export function PersonaLibraryPage() {
       system_prompt: p.system_prompt,
       tools_enabled: p.tools_enabled,
       lanes: p.lanes,
+      deliberation: p.deliberation ?? null,
+    });
+  }
+
+  /** Copy a chat persona into a panel preset — the quickest way to get a deliberation
+   *  whose lineup you already trust. */
+  function cloneAsDeliberation(p: Persona) {
+    const panel = p.lanes.filter((l) => l.role !== "judge").slice(0, 5);
+    const judge = p.lanes.find((l) => l.role === "judge");
+    create.mutate({
+      name: `⚖️ ${p.name}`,
+      description: p.description,
+      system_prompt: null,
+      tools_enabled: false,
+      lanes: judge ? [...panel, judge] : panel,
+      deliberation: {
+        mode: "council",
+        max_rounds: 2,
+        synthesis: true,
+        minority_report: true,
+        critique_synthesis: true,
+        evidence: false,
+      },
     });
   }
 
@@ -334,6 +469,7 @@ export function PersonaLibraryPage() {
       system_prompt: p.system_prompt,
       tools_enabled: p.tools_enabled,
       lanes: p.lanes,
+      deliberation: p.deliberation ?? null,
     };
     const url = URL.createObjectURL(
       new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
@@ -409,6 +545,18 @@ export function PersonaLibraryPage() {
                       {p.name}
                     </h3>
                     <div className="flex shrink-0 items-center gap-1">
+                      {p.deliberation && (
+                        <span
+                          title={`Opens a panel — ${
+                            p.deliberation.mode === "quick"
+                              ? "quick vote"
+                              : `council, ${p.deliberation.max_rounds} rounds`
+                          }`}
+                          className="rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300"
+                        >
+                          ⚖️ {p.deliberation.mode}
+                        </span>
+                      )}
                       {p.is_default && (
                         <span
                           title="Opens automatically on New chat"
@@ -457,25 +605,27 @@ export function PersonaLibraryPage() {
                       onClick={() => startTopic(p)}
                       className="rounded bg-brand px-2 py-1 font-medium text-white hover:brightness-110"
                     >
-                      ▶ Use
+                      {p.deliberation ? "⚖️ Ask a panel" : "▶ Use"}
                     </button>
-                    <button
-                      onClick={() =>
-                        setDefault.mutate({ id: p.id, isDefault: !p.is_default })
-                      }
-                      title={
-                        p.is_default
-                          ? "This persona opens on New chat — click to unset"
-                          : "Make this the default persona for New chat"
-                      }
-                      className={`rounded border px-2 py-1 ${
-                        p.is_default
-                          ? "border-brand bg-brand/10 text-brand"
-                          : "border-gray-300 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-800"
-                      }`}
-                    >
-                      {p.is_default ? "★ Default" : "☆ Default"}
-                    </button>
+                    {!p.deliberation && (
+                      <button
+                        onClick={() =>
+                          setDefault.mutate({ id: p.id, isDefault: !p.is_default })
+                        }
+                        title={
+                          p.is_default
+                            ? "This persona opens on New chat — click to unset"
+                            : "Make this the default persona for New chat"
+                        }
+                        className={`rounded border px-2 py-1 ${
+                          p.is_default
+                            ? "border-brand bg-brand/10 text-brand"
+                            : "border-gray-300 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-800"
+                        }`}
+                      >
+                        {p.is_default ? "★ Default" : "☆ Default"}
+                      </button>
+                    )}
                     <button
                       onClick={() => setEditing(p)}
                       className="rounded border border-gray-300 px-2 py-1 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-800"
@@ -489,6 +639,15 @@ export function PersonaLibraryPage() {
                     >
                       ⧉ Clone
                     </button>
+                    {!p.deliberation && p.lanes.length >= 2 && (
+                      <button
+                        onClick={() => cloneAsDeliberation(p)}
+                        title="Copy this line-up into a deliberation persona"
+                        className="rounded border border-gray-300 px-2 py-1 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-800"
+                      >
+                        ⚖️ As panel
+                      </button>
+                    )}
                     <button
                       onClick={() => exportPersona(p)}
                       title="Export as JSON"

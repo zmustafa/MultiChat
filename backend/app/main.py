@@ -114,7 +114,11 @@ def _migrate() -> None:
             "trashed": "BOOLEAN DEFAULT 0",
             "mode": "VARCHAR DEFAULT 'compare'",
         },
-        "personas": {"tools_enabled": "BOOLEAN DEFAULT 0", "is_default": "BOOLEAN DEFAULT 0"},
+        "personas": {
+            "tools_enabled": "BOOLEAN DEFAULT 0",
+            "is_default": "BOOLEAN DEFAULT 0",
+            "deliberation_json": "JSON",
+        },
         "lanes": {"hidden": "BOOLEAN DEFAULT 0"},
         "integrations": {"eula_accepted": "BOOLEAN DEFAULT 0"},
         "attachments": {"extracted_text": "TEXT"},

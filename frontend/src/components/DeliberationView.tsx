@@ -464,9 +464,11 @@ export function DeliberationView({ runId }: { runId: string }) {
                   </div>
                 )}
 
-                {(synthesis.do_now?.length ||
-                  synthesis.consider_later?.length ||
-                  synthesis.skip?.length) && (
+                {!!(
+                  (synthesis.do_now?.length ?? 0) ||
+                  (synthesis.consider_later?.length ?? 0) ||
+                  (synthesis.skip?.length ?? 0)
+                ) && (
                   <div className="mt-3 grid gap-2 sm:grid-cols-3">
                     {(
                       [

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../api/client";
-import type { Persona, PersonaLane } from "../api/types";
+import type { DeliberationPreset, Persona, PersonaLane } from "../api/types";
 
 export function usePersonas() {
   return useQuery({
@@ -15,6 +15,7 @@ export interface PersonaBody {
   system_prompt?: string | null;
   tools_enabled?: boolean;
   lanes?: PersonaLane[];
+  deliberation?: DeliberationPreset | null;
 }
 
 export function usePersonaMutations() {

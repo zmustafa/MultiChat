@@ -8,6 +8,7 @@ from ..db import get_db
 from ..models import Persona, Provider, User
 from ..providers.registry import build_provider
 from ..schemas import (
+    DeliberationPreset,
     PersonaCreate,
     PersonaEnhanceIn,
     PersonaEnhanceOut,
@@ -29,6 +30,9 @@ def _serialize(p: Persona) -> PersonaOut:
         tools_enabled=bool(p.tools_enabled),
         is_default=bool(p.is_default),
         lanes=[PersonaLane(**lane) for lane in (p.lanes_json or [])],
+        deliberation=(
+            DeliberationPreset(**p.deliberation_json) if p.deliberation_json else None
+        ),
         created_at=p.created_at,
         updated_at=p.updated_at,
     )
@@ -66,6 +70,9 @@ def create_persona(
         system_prompt=payload.system_prompt,
         tools_enabled=payload.tools_enabled,
         lanes_json=[lane.model_dump() for lane in payload.lanes],
+        deliberation_json=(
+            payload.deliberation.model_dump() if payload.deliberation else None
+        ),
     )
     db.add(p)
     db.commit()
@@ -191,6 +198,8 @@ def update_persona(
         p.tools_enabled = payload.tools_enabled
     if payload.lanes is not None:
         p.lanes_json = [lane.model_dump() for lane in payload.lanes]
+    if payload.deliberation is not None:
+        p.deliberation_json = payload.deliberation.model_dump()
     db.commit()
     db.refresh(p)
     return _serialize(p)
@@ -207,6 +216,13 @@ def set_default_persona(
     {"default": false} clears it. Only one persona can be default at a time."""
     p = _get_owned(db, user, persona_id)
     make_default = True if payload is None else bool(payload.get("default", True))
+    if make_default and p.deliberation_json:
+        # The default persona opens a New chat; a deliberation needs a question first,
+        # so it can never fill that role.
+        raise HTTPException(
+            status_code=400,
+            detail="A deliberation persona cannot be the default for new chats",
+        )
     # Clear the flag on all of the user's personas, then set it on this one.
     for other in db.scalars(
         select(Persona).where(Persona.user_id == user.id)

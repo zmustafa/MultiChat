@@ -5,7 +5,6 @@ import type { Persona, SearchHit, SessionListItem } from "../api/types";
 import { searchSessions, useFolderMutations, useFolders, useUserSettings } from "../hooks/useExtras";
 import { useDismiss } from "../hooks/useDismiss";
 import { useSessionMutations } from "../hooks/useSessions";
-import { DeliberationSetup } from "./DeliberationSetup";
 import { listDeliberations } from "../api/deliberation";
 
 interface Props {
@@ -45,7 +44,6 @@ export function SessionSidebar({
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
-  const [deliberateOpen, setDeliberateOpen] = useState(false);
   const [showDeliberations, setShowDeliberations] = useState(true);
   const [deliberations, setDeliberations] = useState<
     { id: string; prompt: string; status: string; converged: boolean; created_at: string }[]
@@ -53,9 +51,14 @@ export function SessionSidebar({
   const navigate = useNavigate();
   const { data: userSettings } = useUserSettings();
 
+  // A persona either opens a chat or opens a panel; they behave differently enough to
+  // deserve separate sections in the menu.
+  const deliberationPersonas = personas.filter((p) => p.deliberation);
+  const chatPersonas = personas.filter((p) => !p.deliberation);
+
   // "New chat" either launches the default persona directly (when the user opted into that
   // in Settings → General) or opens the persona picker.
-  const defaultPersona = personas.find((p) => p.is_default);
+  const defaultPersona = chatPersonas.find((p) => p.is_default);
   const autoDefault =
     !!userSettings?.new_chat_use_default_persona && !!defaultPersona;
   const handleNewChat = () => {
@@ -114,7 +117,8 @@ export function SessionSidebar({
       cancelled = true;
       clearInterval(timer);
     };
-  }, [deliberateOpen]);
+    // Re-read on navigation so a run started from the compose screen shows up at once.
+  }, [location.pathname]);
 
   return (
     <div className="flex h-full w-60 shrink-0 flex-col border-r border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-950">
@@ -148,17 +152,43 @@ export function SessionSidebar({
         </div>
         {menuOpen && (
           <div className="absolute left-2 right-2 z-10 mt-1 rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-900">
+            {/* Deliberation personas carry a panel + settings, so picking one goes
+                straight to the question box with everything already chosen. */}
+            {deliberationPersonas.length > 0 && (
+              <div className="pb-1">
+                <div className="px-3 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
+                  Deliberate
+                </div>
+                {deliberationPersonas.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => {
+                      setMenuOpen(false);
+                      navigate(`/d/new?persona=${p.id}`);
+                    }}
+                    className="block w-full px-3 py-1.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800"
+                    title={p.description || ""}
+                  >
+                    <span className="block truncate">{p.name}</span>
+                    <span className="block truncate text-[11px] text-gray-400">
+                      {p.description ||
+                        `${p.lanes.filter((l) => l.role !== "judge").length} models`}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
             <button
               onClick={() => {
                 setMenuOpen(false);
-                setDeliberateOpen(true);
+                navigate("/d/new");
               }}
               title="Put one question to a panel of models and have them review each other"
               className="block w-full px-3 py-1.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800"
             >
-              ⚖️ Deliberate…
+              ⚖️ Custom deliberation…
               <span className="block truncate text-[11px] text-gray-400">
-                panel answers, reviews, converges
+                pick the panel yourself
               </span>
             </button>
             <div className="my-1 border-t border-gray-100 dark:border-gray-800" />
@@ -171,12 +201,12 @@ export function SessionSidebar({
             >
               Blank topic
             </button>
-            {personas.length > 0 && (
+            {chatPersonas.length > 0 && (
               <div className="mt-1 border-t border-gray-100 pt-1 dark:border-gray-800">
                 <div className="px-3 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
                   Personas
                 </div>
-                {personas.map((p) => (
+                {chatPersonas.map((p) => (
                   <button
                     key={p.id}
                     onClick={() => {
@@ -439,7 +469,6 @@ export function SessionSidebar({
           </>
         )}
       </div>
-      {deliberateOpen && <DeliberationSetup onClose={() => setDeliberateOpen(false)} />}
     </div>
   );
 

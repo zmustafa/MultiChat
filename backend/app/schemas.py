@@ -323,12 +323,25 @@ class PersonaLane(BaseModel):
     collapsed: bool = False
 
 
+class DeliberationPreset(BaseModel):
+    """The knobs a deliberation persona carries. Its presence marks the persona as one
+    that opens a panel rather than a chat."""
+
+    mode: Literal["council", "quick"] = "council"
+    max_rounds: int = Field(default=2, ge=1, le=3)
+    synthesis: bool = True
+    minority_report: bool = True
+    critique_synthesis: bool = True
+    evidence: bool = False
+
+
 class PersonaCreate(BaseModel):
     name: str
     description: str | None = None
     system_prompt: str | None = None
     tools_enabled: bool = True
     lanes: list[PersonaLane] = Field(default_factory=list, max_length=6)
+    deliberation: DeliberationPreset | None = None
 
 
 class PersonaUpdate(BaseModel):
@@ -337,6 +350,7 @@ class PersonaUpdate(BaseModel):
     system_prompt: str | None = None
     tools_enabled: bool | None = None
     lanes: list[PersonaLane] | None = None
+    deliberation: DeliberationPreset | None = None
 
 
 class PersonaOut(BaseModel):
@@ -347,6 +361,7 @@ class PersonaOut(BaseModel):
     tools_enabled: bool
     is_default: bool = False
     lanes: list[PersonaLane]
+    deliberation: DeliberationPreset | None = None
     created_at: datetime
     updated_at: datetime
 

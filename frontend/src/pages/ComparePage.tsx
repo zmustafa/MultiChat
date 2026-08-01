@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { API_BASE, apiFetch, getToken, mediaUrl } from "../api/client";
 import type { LaneRole, Persona } from "../api/types";
 import { CommandPalette } from "../components/CommandPalette";
 import { ArtifactPanel } from "../components/ArtifactPanel";
 import { CompareGrid } from "../components/CompareGrid";
+import { DeliberationLaunch } from "../components/DeliberationLaunch";
 import { DeliberationView } from "../components/DeliberationView";
 import { DiffView } from "../components/DiffView";
 import { InsightsPanel } from "../components/InsightsPanel";
@@ -59,6 +60,7 @@ export function ComparePage() {
   // permanent, shareable/bookmarkable link. localStorage only remembers the last
   // chat to restore when landing on "/".
   const { sessionId, runId } = useParams<{ sessionId: string; runId: string }>();
+  const [search] = useSearchParams();
   const activeId = sessionId ?? null;
   const setActiveId = useCallback(
     (id: string | null) => {
@@ -940,11 +942,16 @@ export function ComparePage() {
 
   // A deliberation opens in place of the lanes rather than on its own page, so the
   // sidebar stays put and picking one feels like switching to any other conversation.
+  // "/d/new" is the compose screen: a deliberation needs its question before it exists.
   if (runId)
     return (
       <div className="flex h-full bg-white dark:bg-gray-950">
         {sidebar}
-        <DeliberationView runId={runId} />
+        {runId === "new" ? (
+          <DeliberationLaunch personaId={search.get("persona")} />
+        ) : (
+          <DeliberationView runId={runId} />
+        )}
       </div>
     );
 

@@ -154,6 +154,16 @@ export interface PersonaLane {
   collapsed?: boolean;
 }
 
+/** Present only on personas that open a deliberation panel instead of a chat. */
+export interface DeliberationPreset {
+  mode: "council" | "quick";
+  max_rounds: number;
+  synthesis: boolean;
+  minority_report: boolean;
+  critique_synthesis: boolean;
+  evidence: boolean;
+}
+
 export interface Persona {
   id: string;
   name: string;
@@ -162,6 +172,7 @@ export interface Persona {
   tools_enabled: boolean;
   is_default?: boolean;
   lanes: PersonaLane[];
+  deliberation?: DeliberationPreset | null;
   created_at: string;
   updated_at: string;
 }

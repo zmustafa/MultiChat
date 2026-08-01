@@ -315,6 +315,71 @@ READMEs, API docs, how-to guides, tutorials, reference docs, release notes, docs
 - Stay balanced on contested topics — present the strongest evidence on each side and let the user judge.
 - Match depth to the question: a quick fact deserves a quick sourced answer; a deep question deserves a structured, thorough synthesis.""",
     },
+    # --- Deliberation presets -------------------------------------------------------
+    # These carry a "deliberation" block, so picking one opens a panel (question first)
+    # rather than a chat. Lanes are the panel; a "judge" lane writes the synthesis.
+    {
+        "key": "delib_quick_panel",
+        "name": "⚖️ Quick Panel",
+        "description": "Three models answer independently, then vote on the best answer",
+        "tools_enabled": False,
+        "is_default": False,
+        "lanes": [
+            {"model": "gpt-5.5", "role": "responder"},
+            {"model": "claude-opus-4.8", "role": "responder"},
+            {"model": "gemini-3.5-flash", "role": "responder"},
+        ],
+        "deliberation": {
+            "mode": "quick",
+            "max_rounds": 1,
+            "synthesis": False,
+            "minority_report": False,
+            "critique_synthesis": False,
+            "evidence": False,
+        },
+    },
+    {
+        "key": "delib_full_council",
+        "name": "⚖️ Full Council",
+        "description": "Independent drafts, two rounds of peer review, then an audited synthesis",
+        "tools_enabled": False,
+        "is_default": False,
+        "lanes": [
+            {"model": "gpt-5.5", "role": "responder"},
+            {"model": "claude-opus-4.8", "role": "responder"},
+            {"model": "gemini-3.5-flash", "role": "responder"},
+            {"model": "gemini-3.1-pro-preview", "role": "judge"},
+        ],
+        "deliberation": {
+            "mode": "council",
+            "max_rounds": 2,
+            "synthesis": True,
+            "minority_report": True,
+            "critique_synthesis": True,
+            "evidence": False,
+        },
+    },
+    {
+        "key": "delib_evidence_council",
+        "name": "⚖️ Evidence Council",
+        "description": "Full council, but every factual claim must state its source",
+        "tools_enabled": False,
+        "is_default": False,
+        "lanes": [
+            {"model": "gpt-5.5", "role": "responder"},
+            {"model": "claude-opus-4.8", "role": "responder"},
+            {"model": "gemini-3.5-flash", "role": "responder"},
+            {"model": "gemini-3.1-pro-preview", "role": "judge"},
+        ],
+        "deliberation": {
+            "mode": "council",
+            "max_rounds": 2,
+            "synthesis": True,
+            "minority_report": True,
+            "critique_synthesis": True,
+            "evidence": True,
+        },
+    },
 ]
 
 
@@ -378,6 +443,7 @@ def seed_starter_personas(db: DbSession, user: User) -> int:
                 tools_enabled=bool(spec.get("tools_enabled")),
                 is_default=make_default,
                 lanes_json=lanes,
+                deliberation_json=spec.get("deliberation"),
             )
         )
         created += 1

@@ -258,7 +258,12 @@ class ToolCredential(Base):
 
 
 class Persona(Base):
-    """A reusable topic template: a shared system prompt + a set of lanes."""
+    """A reusable topic template: a shared system prompt + a set of lanes.
+
+    A persona normally opens a chat. When ``deliberation_json`` is set it instead opens a
+    deliberation, and the lanes become the panel (``role="responder"``) plus an optional
+    judge — so one concept covers both without a second kind of template.
+    """
 
     __tablename__ = "personas"
 
@@ -273,6 +278,9 @@ class Persona(Base):
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     # [{"provider_id": .., "model": .., "role": ".."}]
     lanes_json: Mapped[list] = mapped_column(JSON, default=list)
+    # None => ordinary chat persona. Otherwise the deliberation preset:
+    # {mode, max_rounds, synthesis, minority_report, critique_synthesis, evidence}
+    deliberation_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=_now)
     updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
 

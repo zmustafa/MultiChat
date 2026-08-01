@@ -119,6 +119,7 @@ def build_export(db: DbSession, user: User) -> bytes:
             "tools_enabled": p.tools_enabled,
             "is_default": p.is_default,
             "lanes_json": p.lanes_json,
+            "deliberation_json": p.deliberation_json,
         }
         for p in personas
     ]
@@ -418,6 +419,7 @@ def restore_import(db: DbSession, user: User, zip_bytes: bytes) -> dict:
                 tools_enabled=bool(p.get("tools_enabled")),
                 is_default=bool(p.get("is_default")),
                 lanes_json=p.get("lanes_json") or [],
+                deliberation_json=p.get("deliberation_json"),
             )
         )
 
