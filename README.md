@@ -3,10 +3,12 @@
 # 💬 MultiChat
 
 **Broadcast one prompt to many AI models and watch them answer side-by-side — live.**
-A multi-model compare workbench: fan a single prompt out to 2–6 models at once, stream
-every answer concurrently, then let a Judge lane synthesize the best one. Bring your own
-providers (API key **or** OAuth), call tools, run evals, and track it all on an insights
-dashboard.
+A multi-model workbench with two modes: **compare** — fan a single prompt out to 2–6 models
+and stream every answer concurrently, then let a Judge lane synthesize the best one; or
+**deliberate** — an AI-only **Habermas Machine** that convenes those same models as a panel:
+blind drafts, anonymous peer review, an explicit convergence gate, and a minority report of
+what they never agreed on. Bring your own providers (API key **or** OAuth), call tools, run
+evals, and track it all on an insights dashboard.
 
 [![CI](https://github.com/zmustafa/MultiChat/actions/workflows/ci.yml/badge.svg)](https://github.com/zmustafa/MultiChat/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -16,11 +18,12 @@ dashboard.
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[Features](#-features) · [Screenshots](#-screenshots) · [Quick start](#-quick-start-local) · [Connect providers](#-connect-your-ai-providers) · [How it works](#-how-it-works) · [Tech stack](#-tech-stack) · [Docs](#-documentation)
+[Features](#-features) · [Screenshots](#-screenshots) · [Quick start](#-quick-start-local) · [Connect providers](#-connect-your-ai-providers) · [How it works](#-how-it-works) · [Deliberation](#-model-deliberation--the-research-behind-it) · [Tech stack](#-tech-stack) · [Docs](#-documentation)
 
-> 🆕 **Latest:** parallel evaluations (5 lanes at once) with **time-to-first-token** &
-> **tokens/sec** metrics, a full **Insights** dashboard (token usage, cost, provider mix,
-> activity), and new providers (**OpenAI EU**, **Azure Foundry**).
+> 🆕 **Latest:** **Deliberation** — convene 2–5 models as a panel (an AI-only *Habermas
+> Machine*): blind drafts, anonymous claim-level review, an approval gate, a synthesis with
+> a **minority report**, and a JSON **audit trail** of every step. Chats and panels now
+> share one sidebar.
 
 ![MultiChat — one prompt broadcast to gpt-5.6-sol, claude-opus-5, claude-sonnet-5 and gemini-3.6-flash, each streaming its answer side-by-side in its own lane](docs/assets/gif/hero.gif)
 
@@ -38,12 +41,15 @@ dashboard.
 Picking the "best" model is guesswork when you only ever see one answer at a time.
 **MultiChat puts them head-to-head** — one prompt fans out to every lane, each streams
 live in its own column, and a **Judge** lane can merge them into a single best answer.
+When the *disagreement* is the point, switch to **Deliberate** and the same models become
+a panel that has to justify everything it rejects.
 It's not just a chat box: enable **tools** (web search, fetch URL, calculator), run a
 **suite of evals** across many models with latency/throughput scoring, and watch usage,
 cost, and provider mix on an **Insights** dashboard — all running locally against your
 own keys.
 
 - 🏟️ **Compare, not one-at-a-time** — broadcast a prompt to 2–6 lanes and read every model's answer concurrently, with a **Diff** view to spot differences.
+- ⚖️ **Deliberate, don't just compare** — convene the models as a panel (an AI-only **Habermas Machine**): blind drafts, anonymous peer review, an explicit convergence gate, and a minority report when they don't agree.
 - 🔌 **Bring your own provider** — OpenAI, Azure OpenAI, Azure Foundry, Anthropic, Gemini, GitHub Copilot, Ollama, OpenAI-compatible — via **API key or OAuth sign-in** (ChatGPT / Claude / Copilot).
 - ⚖️ **Agentic tools + a Judge** — models call web search / fetch / calculator with a persisted tool-call timeline, and a Judge lane synthesizes the strongest answer.
 - 🧪 **Evals & 📊 Insights built in** — run prompt × model grids in parallel with score, TTFT and tok/s; track token usage, estimated cost, and activity trends over time.
