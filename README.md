@@ -385,7 +385,7 @@ flowchart LR
 The fan-out streaming engine, the provider abstraction, and the tool implementations all
 live in the backend; the browser only ever talks to the API.
 
-## ⚖️ Model Deliberation — the research behind it
+## ⚖ Model Deliberation — the research behind it
 
 > **MultiChat Deliberation is an AI-only adaptation of the deliberative pattern
 > demonstrated by DeepMind's Habermas Machine. It combines blind multi-model reasoning,
