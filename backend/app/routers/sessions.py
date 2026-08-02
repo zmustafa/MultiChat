@@ -182,6 +182,24 @@ def list_sessions(
         .where(ChatSession.user_id == user.id)
         .order_by(ChatSession.updated_at.desc())
     ).all()
+    # Counts come from two grouped queries rather than two per row: this endpoint is
+    # polled while a panel runs, and at 60 sessions the per-row version was 122 queries.
+    lane_counts = dict(
+        db.execute(
+            select(Lane.session_id, func.count(Lane.id))
+            .join(ChatSession, ChatSession.id == Lane.session_id)
+            .where(ChatSession.user_id == user.id)
+            .group_by(Lane.session_id)
+        ).all()
+    )
+    turn_counts = dict(
+        db.execute(
+            select(Turn.session_id, func.count(Turn.id))
+            .join(ChatSession, ChatSession.id == Turn.session_id)
+            .where(ChatSession.user_id == user.id)
+            .group_by(Turn.session_id)
+        ).all()
+    )
     # Latest run per deliberation session, fetched in one pass rather than per row.
     runs: dict[str, DeliberationRun] = {}
     for run in db.scalars(
@@ -192,20 +210,14 @@ def list_sessions(
         runs[run.session_id] = run
     out = []
     for s in rows:
-        count = db.scalar(
-            select(func.count(Lane.id)).where(Lane.session_id == s.id)
-        )
-        msg_count = db.scalar(
-            select(func.count(Turn.id)).where(Turn.session_id == s.id)
-        )
         run = runs.get(s.id) if s.mode == "deliberation" else None
         out.append(
             SessionListItem(
                 id=s.id,
                 title=s.title,
                 updated_at=s.updated_at,
-                lane_count=count or 0,
-                message_count=msg_count or 0,
+                lane_count=lane_counts.get(s.id, 0),
+                message_count=turn_counts.get(s.id, 0),
                 folder_id=s.folder_id,
                 pinned=bool(s.pinned),
                 archived=bool(s.archived),
