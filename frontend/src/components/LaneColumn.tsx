@@ -83,7 +83,7 @@ function DownloadIcon() {
 }
 
 /** Download just this response as a US Letter PDF (diagrams, code and tables included). */
-function DownloadPdfButton({ onDownload }: { onDownload: () => Promise<void> }) {
+export function DownloadPdfButton({ onDownload }: { onDownload: () => Promise<void> }) {
   const [state, setState] = useState<"idle" | "busy" | "done" | "error">("idle");
   const [error, setError] = useState("");
   return (

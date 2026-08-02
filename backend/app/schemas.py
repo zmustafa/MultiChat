@@ -243,6 +243,13 @@ class SessionListItem(BaseModel):
     pinned: bool = False
     archived: bool = False
     trashed: bool = False
+    # "compare" for a chat, "deliberation" for a panel. A deliberation opens its own page,
+    # so the list carries the run to open and the verdict to show instead of a message count.
+    mode: str = "compare"
+    run_id: str | None = None
+    status: str | None = None
+    converged: bool | None = None
+    total_calls: int | None = None
 
 
 class SessionDetail(BaseModel):

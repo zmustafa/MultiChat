@@ -426,6 +426,9 @@ class DeliberationStep(Base):
         ForeignKey("deliberation_runs.id", ondelete="CASCADE"), index=True, nullable=False
     )
     lane_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # The LaneMessage this step's answer was mirrored into, so per-message features
+    # (download this answer as a PDF, pin it) work on a step with no special-casing.
+    message_id: Mapped[str | None] = mapped_column(String, nullable=True)
     round_index: Mapped[int] = mapped_column(Integer, default=0)
     # draft | critique | synthesis | synthesis_critique | synthesis_revise
     phase: Mapped[str] = mapped_column(String, default="draft")

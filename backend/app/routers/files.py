@@ -18,7 +18,7 @@ from ..tools.pptx_generate import GENERATED_SUBDIR
 router = APIRouter(prefix="/api/files", tags=["files"])
 
 # Files are stored as "<uuid hex>.<ext>"; only serve those exact, unguessable names.
-_NAME_RE = re.compile(r"^[0-9a-f]{32}\.(pptx|docx|xlsx|pdf|md|txt)$")
+_NAME_RE = re.compile(r"^[0-9a-f]{32}\.(pptx|docx|xlsx|pdf|md|txt|json)$")
 
 _MIME_BY_EXT = {
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -27,6 +27,7 @@ _MIME_BY_EXT = {
     "pdf": "application/pdf",
     "md": "text/markdown",
     "txt": "text/plain",
+    "json": "application/json",
 }
 
 

@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { apiFetch, mediaUrl } from "../api/client";
+import { apiFetch } from "../api/client";
 import type { Attachment } from "../api/types";
 import { useProviders } from "../hooks/useProviders";
 import { usePersonas } from "../hooks/usePersonas";
 import { resolvePersonaLanes } from "../utils/personaLanes";
+import { PromptField } from "./ComposerExtras";
 import {
   classifyPrompt,
   createDeliberation,
@@ -23,6 +24,42 @@ interface Option {
 /** Rough per-call cost used only for the up-front estimate. */
 function estimateCost(calls: number): string {
   return `$${(calls * 0.025).toFixed(2)}`;
+}
+
+/**
+ * Rough wall-clock estimate. Panelists inside a round run in parallel, so the cost is
+ * roughly one model call per round plus the synthesis passes — measured runs land at
+ * 12-25s per sequential call.
+ */
+function estimateTime(rounds: number, quick: boolean, synthesis: boolean): string {
+  const sequential = quick ? 2 : 1 + rounds + (synthesis ? 2 : 0);
+  const low = Math.round(sequential * 12);
+  const high = Math.round(sequential * 25);
+  const fmt = (s: number) => (s < 90 ? `${s}s` : `${Math.round(s / 60)}m`);
+  return `${fmt(low)}–${fmt(high)}`;
+}
+
+/** Panels the user actually used, most recent first. Kept client-side on purpose. */
+const RECENT_KEY = "multichat_recent_panels";
+interface RecentPanel {
+  keys: string[];
+  judge: string;
+  mode: "council" | "quick";
+  rounds: number;
+  models: string[];
+}
+function loadRecentPanels(): RecentPanel[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+    return Array.isArray(raw) ? raw.slice(0, 3) : [];
+  } catch {
+    return [];
+  }
+}
+function rememberPanel(entry: RecentPanel): void {
+  const id = entry.keys.join("|");
+  const next = [entry, ...loadRecentPanels().filter((p) => p.keys.join("|") !== id)];
+  localStorage.setItem(RECENT_KEY, JSON.stringify(next.slice(0, 3)));
 }
 
 /**
@@ -59,9 +96,6 @@ export function DeliberationLaunch({ personaId }: { personaId: string | null }) 
   const [critiqueSynthesis, setCritiqueSynthesis] = useState(true);
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [uploading, setUploading] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [dragOver, setDragOver] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [showAdjust, setShowAdjust] = useState(false);
@@ -71,6 +105,7 @@ export function DeliberationLaunch({ personaId }: { personaId: string | null }) 
     recommend: string;
     reason: string;
   } | null>(null);
+  const [recentPanels] = useState<RecentPanel[]>(() => loadRecentPanels());
 
   // Apply the persona once providers are known: its lanes become the panel and its
   // preset the settings. Without a persona, fall back to a diverse three-model panel.
@@ -159,26 +194,6 @@ export function DeliberationLaunch({ personaId }: { personaId: string | null }) 
     );
   }
 
-  async function uploadFiles(files: File[]) {
-    const images = files.filter((f) => f.type.startsWith("image/"));
-    if (!images.length) return;
-    setUploading(true);
-    try {
-      const form = new FormData();
-      images.forEach((f) => form.append("files", f));
-      const res = await apiFetch<Attachment[]>("/api/uploads", {
-        method: "POST",
-        body: form,
-      });
-      setAttachments((prev) => [...prev, ...res]);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setUploading(false);
-      if (fileRef.current) fileRef.current.value = "";
-    }
-  }
-
   async function start() {
     setError("");
     if (chosen.length < 2) return setError("Pick at least two models for the panel.");
@@ -189,6 +204,14 @@ export function DeliberationLaunch({ personaId }: { personaId: string | null }) 
         provider_id: c.providerId,
         model: c.model,
       }));
+      // Remember the panel so the next question doesn't start from an empty grid.
+      rememberPanel({
+        keys: chosen.map((c) => c.key),
+        judge: judgeKey,
+        mode,
+        rounds,
+        models: chosen.map((c) => c.model),
+      });
       const res = await createDeliberation({
         prompt: prompt.trim(),
         participants,
@@ -233,99 +256,67 @@ export function DeliberationLaunch({ personaId }: { personaId: string | null }) 
             <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
               Your question
             </label>
-            <div
-              onDragOver={(e) => {
-                e.preventDefault();
-                setDragOver(true);
-              }}
-              onDragLeave={(e) => {
-                if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false);
-              }}
-              onDrop={(e) => {
-                e.preventDefault();
-                setDragOver(false);
-                void uploadFiles(Array.from(e.dataTransfer.files));
-              }}
-              className={`relative mt-1 rounded-lg border ${
-                dragOver ? "border-brand border-dashed" : "border-gray-300 dark:border-gray-600"
-              } dark:bg-gray-800`}
-            >
-              {attachments.length > 0 && (
-                <div className="flex flex-wrap gap-2 p-2 pb-0">
-                  {attachments.map((a) => (
-                    <div key={a.id} className="relative">
-                      <img
-                        src={mediaUrl(a.url)}
-                        alt={a.filename}
-                        className="h-16 rounded border border-gray-200 object-cover dark:border-gray-700"
-                      />
-                      <button
-                        onClick={() =>
-                          setAttachments((prev) => prev.filter((x) => x.id !== a.id))
-                        }
-                        title="Remove"
-                        className="absolute -right-1.5 -top-1.5 rounded-full bg-gray-700 px-1 text-[10px] text-white"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <textarea
-                autoFocus
+            <div className="mt-1">
+              <PromptField
                 value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                onPaste={(e) => {
-                  const files = Array.from(e.clipboardData?.items || [])
-                    .filter((i) => i.kind === "file")
-                    .map((i) => i.getAsFile())
-                    .filter((f): f is File => !!f);
-                  if (files.length) void uploadFiles(files);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void start();
-                }}
-                rows={5}
+                onChange={setPrompt}
+                onSubmit={() => void start()}
+                submitOn="mod-enter"
+                autoFocus
+                minRows={4}
+                maxLines={16}
+                attachments={attachments}
+                onAttachmentsChange={setAttachments}
                 placeholder="Ask something where reasonable experts could disagree…"
-                className="w-full resize-none bg-transparent px-3 py-2 text-sm focus:outline-none"
+                footer={
+                  <span className="text-[11px] text-gray-400">
+                    {navigator.platform.includes("Mac") ? "⌘" : "Ctrl"}+Enter to start
+                    {attachments.length > 0 &&
+                      ` · every panelist and reviewer sees ${
+                        attachments.length === 1 ? "the attachment" : "all attachments"
+                      }`}
+                  </span>
+                }
               />
-              {dragOver && (
-                <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-lg bg-brand/5 text-xs text-brand">
-                  Drop images to attach
-                </div>
-              )}
-            </div>
-            <div className="mt-1 flex items-center gap-2 text-[11px] text-gray-400">
-              <input
-                ref={fileRef}
-                type="file"
-                accept="image/*"
-                multiple
-                hidden
-                onChange={(e) => void uploadFiles(Array.from(e.target.files ?? []))}
-              />
-              <button
-                onClick={() => fileRef.current?.click()}
-                disabled={uploading}
-                className="rounded border border-gray-300 px-2 py-0.5 text-gray-600 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
-              >
-                {uploading ? "Uploading…" : "📎 Add image"}
-              </button>
-              <span>
-                {navigator.platform.includes("Mac") ? "⌘" : "Ctrl"}+Enter to start
-                {attachments.length > 0 &&
-                  ` · every panelist and reviewer sees ${
-                    attachments.length === 1 ? "the image" : "all images"
-                  }`}
-              </span>
             </div>
           </div>
 
-          {hint && hint.recommend !== "deliberate" && (
-            <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-              This looks like a <strong>{hint.complexity}</strong> question — {hint.reason} A
-              panel costs more and rarely beats a single good answer here.
+          {hint && hint.recommend !== "deliberate" && mode !== "quick" && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+              <span>
+                This looks like a <strong>{hint.complexity}</strong> question — {hint.reason} A
+                panel costs more and rarely beats a single good answer here.
+              </span>
+              <button
+                onClick={() => setMode("quick")}
+                className="ml-auto shrink-0 rounded border border-amber-400 px-2 py-0.5 font-medium hover:bg-amber-100 dark:hover:bg-amber-900"
+              >
+                Use Quick mode instead
+              </button>
+            </div>
+          )}
+
+          {recentPanels.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-500">
+              <span className="font-semibold uppercase tracking-wide text-gray-400">
+                Recent panels
+              </span>
+              {recentPanels.map((p, i) => (
+                <button
+                  key={i}
+                  onClick={() => {
+                    setSelected(p.keys.filter((k) => options.some((o) => o.key === k)));
+                    setJudgeKey(options.some((o) => o.key === p.judge) ? p.judge : "");
+                    setMode(p.mode);
+                    setRounds(p.rounds);
+                  }}
+                  title={p.models.join(", ")}
+                  className="max-w-[18rem] truncate rounded-full border border-gray-300 px-2 py-0.5 hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-800"
+                >
+                  {p.models.join(" · ")}
+                  {p.mode === "quick" ? " · quick" : ` · ${p.rounds}r`}
+                </button>
+              ))}
             </div>
           )}
 
@@ -355,7 +346,8 @@ export function DeliberationLaunch({ personaId }: { personaId: string | null }) 
               </button>
             </div>
             <div className="mt-1 text-[11px] text-gray-500">
-              {summary.join(" · ")} — <strong>{calls} calls</strong> · {estimateCost(calls)}
+              {summary.join(" · ")} — <strong>{calls} calls</strong> · {estimateCost(calls)}{" "}
+              · about {estimateTime(rounds, mode === "quick", synthesis)}
             </div>
             {dropped.length > 0 && (
               <div className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">

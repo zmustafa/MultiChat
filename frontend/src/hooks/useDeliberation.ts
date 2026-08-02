@@ -14,6 +14,8 @@ export interface LiveStep {
   round: number;
   phase: string;
   laneId: string | null;
+  /** Transcript message this answer was mirrored into (per-answer PDF needs it). */
+  messageId?: string | null;
   model?: string;
   status: "running" | "done" | "error";
   chars: number;
@@ -123,6 +125,7 @@ export function useDeliberation(runId: string | null) {
             }),
             model: data.model,
             status: "done",
+            messageId: data.message_id ?? null,
             verdict: data.verdict,
             degraded: data.degraded,
             latencyMs: data.latency_ms,
@@ -236,6 +239,7 @@ export function mergeSteps(
     byId.set(step.stepId, {
       id: step.stepId,
       lane_id: step.laneId,
+      message_id: step.messageId ?? byId.get(step.stepId)?.message_id ?? null,
       round: step.round,
       phase: step.phase,
       label: null,

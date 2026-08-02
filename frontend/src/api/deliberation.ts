@@ -30,6 +30,8 @@ export interface StepOutput {
 export interface DeliberationStep {
   id: string;
   lane_id: string | null;
+  /** The transcript message this answer was mirrored into — enables per-answer PDF. */
+  message_id: string | null;
   round: number;
   phase: string;
   label: string | null;
@@ -92,7 +94,12 @@ export interface DeliberationRun {
   status: string;
   running: boolean;
   prompt: string;
+  /** Set when this run is a follow-up asked of the same panel. */
+  parent_run_id?: string | null;
+  /** Every run in this session, oldest first — the conversation with this panel. */
+  thread?: { id: string; prompt: string; status: string; created_at: string }[];
   images: { id: string; filename: string; url: string }[];
+  documents?: { id: string; filename: string; chars: number }[];
   rounds_used: number;
   converged: boolean;
   config: Record<string, unknown>;
@@ -144,10 +151,37 @@ export function stopDeliberation(runId: string) {
   });
 }
 
-export function continueInChat(runId: string) {
+export function continueInChat(runId: string, stepId?: string) {
   return apiFetch<{ session_id: string }>(`/api/deliberations/${runId}/continue`, {
     method: "POST",
+    body: JSON.stringify({ step_id: stepId ?? null }),
   });
+}
+
+export type DeliberationFormat = "pdf" | "md" | "docx" | "json";
+
+/** Export the whole run. `json` is the audit trail: every step's input and verdict. */
+export function exportDeliberation(runId: string, fmt: DeliberationFormat = "pdf") {
+  return apiFetch<{ url: string; download_name: string }>(
+    `/api/deliberations/${runId}/export?fmt=${fmt}`,
+    { method: "POST" },
+  );
+}
+
+/** Ask the same panel a follow-up; returns the new run to open. */
+export function askFollowup(runId: string, prompt: string, attachmentIds: string[] = []) {
+  return apiFetch<{ run_id: string; session_id: string; turn_id: string }>(
+    `/api/deliberations/${runId}/followup`,
+    { method: "POST", body: JSON.stringify({ prompt, attachment_ids: attachmentIds }) },
+  );
+}
+
+/** Put the same question to the same panel again — e.g. after a panelist failed. */
+export function rerunDeliberation(runId: string) {
+  return apiFetch<{ run_id: string; session_id: string; turn_id: string }>(
+    `/api/deliberations/${runId}/rerun`,
+    { method: "POST" },
+  );
 }
 
 export function listDeliberations(limit = 25) {
@@ -200,10 +234,7 @@ export function unsupportedFacts(step: DeliberationStep): number {
 }
 
 export function exportDeliberationPdf(runId: string) {
-  return apiFetch<{ url: string; download_name: string }>(
-    `/api/deliberations/${runId}/export`,
-    { method: "POST" },
-  );
+  return exportDeliberation(runId, "pdf");
 }
 
 // ---------------------------------------------------------------------------

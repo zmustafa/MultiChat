@@ -124,10 +124,12 @@ def _migrate() -> None:
         "attachments": {"extracted_text": "TEXT"},
         "lane_messages": {"ttft_ms": "INTEGER"},
         "deliberation_runs": {"vote_json": "JSON"},
+        "deliberation_steps": {"message_id": "VARCHAR"},
     }
     insp = inspect(engine)
     existing_tables = set(insp.get_table_names())
     with engine.begin() as conn:
+        added: set[str] = set()
         for table, cols in additions.items():
             if table not in existing_tables:
                 continue
@@ -135,6 +137,61 @@ def _migrate() -> None:
             for col, decl in cols.items():
                 if col not in have:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {decl}"))
+                    added.add(f"{table}.{col}")
+        if "deliberation_steps.message_id" in added:
+            _backfill_step_messages(conn)
+
+
+# Phases whose output is a real answer, and therefore has a transcript message. A vote
+# ballot or a synthesis critique produces neither, so it must not be paired with one.
+_ANSWER_PHASES = ("draft", "critique", "synthesis", "synthesis_revise")
+
+
+def _backfill_step_messages(conn) -> None:
+    """Pair deliberation steps written before ``message_id`` existed with their message.
+
+    Rounds are not unique on their own: a vote ballot shares round 0 with the draft it
+    ranks, and the synthesis and its revision share round 99. So steps and messages are
+    paired *in order* within each (lane, turn, round) group, and only for the phases that
+    actually produce an answer. Getting this wrong would hand two steps the same message
+    and offer a PDF of the wrong text.
+    """
+    from sqlalchemy import text
+
+    phases = ", ".join(f"'{p}'" for p in _ANSWER_PHASES)  # module constant, no user input
+    steps = conn.execute(
+        text(
+            f"""
+            SELECT ds.id, ds.lane_id, r.turn_id, ds.round_index
+              FROM deliberation_steps ds
+              JOIN deliberation_runs r ON r.id = ds.run_id
+             WHERE ds.message_id IS NULL
+               AND ds.lane_id IS NOT NULL
+               AND ds.error IS NULL
+               AND ds.phase IN ({phases})
+             ORDER BY ds.created_at, ds.id
+            """
+        )
+    ).fetchall()
+    if not steps:
+        return
+    messages = conn.execute(
+        text(
+            "SELECT id, lane_id, turn_id, order_index FROM lane_messages "
+            "WHERE role = 'assistant' ORDER BY created_at, id"
+        )
+    ).fetchall()
+    pool: dict[tuple, list[str]] = {}
+    for msg_id, lane_id, turn_id, order_index in messages:
+        pool.setdefault((lane_id, turn_id, order_index), []).append(msg_id)
+    for step_id, lane_id, turn_id, round_index in steps:
+        queue = pool.get((lane_id, turn_id, round_index))
+        if not queue:
+            continue
+        conn.execute(
+            text("UPDATE deliberation_steps SET message_id = :m WHERE id = :s"),
+            {"m": queue.pop(0), "s": step_id},
+        )
 
 
 def _cleanup_generated() -> None:

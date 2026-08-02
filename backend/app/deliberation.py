@@ -49,6 +49,7 @@ from .convergence import (
     should_continue,
 )
 from .db import SessionLocal
+from .documents import document_prompt_block
 from .models import (
     DeliberationRun,
     DeliberationStep,
@@ -237,8 +238,11 @@ def is_running(run_id: str) -> bool:
     return bool(task and not task.done())
 
 
-#: Statuses from which a run can never make further progress on its own.
-TERMINAL_STATUSES = frozenset({"converged", "no_consensus", "stopped", "failed"})
+#: The only statuses a run can still make progress from. Everything else is finished.
+#: This is deliberately an allow-list of *unfinished* states: an allow-list of finished
+#: ones silently rots the moment a new outcome is added — that is exactly how quick
+#: mode's "voted" came to be re-driven (and overwritten) every time it was reopened.
+ACTIVE_STATUSES = frozenset({"pending", "running"})
 
 
 def _finished_frame(run_id: str) -> str | None:
@@ -250,7 +254,7 @@ def _finished_frame(run_id: str) -> str | None:
     db = SessionLocal()
     try:
         run = db.get(DeliberationRun, run_id)
-        if run is None or run.status not in TERMINAL_STATUSES:
+        if run is None or run.status in ACTIVE_STATUSES:
             return None
         return _sse_step(
             "delib_done",
@@ -528,6 +532,7 @@ async def _run_step(
         "label": label,
         "model": model,
     }
+    message_id: str | None = None
     try:
         step = DeliberationStep(
             id=step_id,
@@ -553,18 +558,22 @@ async def _run_step(
         if run and lane_id and result and not error:
             body = _answer_of(result.data)
             if body:
-                db.add(
-                    LaneMessage(
-                        lane_id=lane_id,
-                        turn_id=run.turn_id,
-                        role="assistant",
-                        content=body,
-                        order_index=round_index,
-                        usage_json=result.usage,
-                        latency_ms=result.latency_ms,
-                        ttft_ms=result.ttft_ms,
-                    )
+                message = LaneMessage(
+                    lane_id=lane_id,
+                    turn_id=run.turn_id,
+                    role="assistant",
+                    content=body,
+                    order_index=round_index,
+                    usage_json=result.usage,
+                    latency_ms=result.latency_ms,
+                    ttft_ms=result.ttft_ms,
                 )
+                db.add(message)
+                db.flush()
+                # Remember which message this step became: the UI needs the id to offer
+                # "download this answer as a PDF" on the step itself.
+                step.message_id = message.id
+                message_id = message.id
         db.commit()
     except Exception as exc:  # noqa: BLE001
         db.rollback()
@@ -582,6 +591,7 @@ async def _run_step(
             "step_done",
             {
                 **payload,
+                "message_id": message_id,
                 "verdict": str(result.data.get("verdict") or "").upper() or None,
                 "degraded": result.degraded,
                 "latency_ms": result.latency_ms,
@@ -634,6 +644,13 @@ def _load_context(run_id: str) -> dict | None:
         # Read the images once here: every panelist and reviewer is shown the same
         # question, and re-reading them from disk per call would be wasteful.
         images = [part for att in (turn.attachments if turn else []) if (part := _image_part(att))]
+        # Uploaded documents are inlined into the question itself, exactly as a chat lane
+        # does it, so every panelist reasons over the same text.
+        prompt = run.prompt + document_prompt_block(turn.attachments if turn else [])
+        # A follow-up carries what this panel already settled, so it doesn't start blind.
+        context = str((run.config_json or {}).get("context") or "").strip()
+        if context:
+            prompt = f"{prompt}\n\n---\n\n{context}"
         lanes = sorted(session.lanes, key=lambda l: l.position)
         providers = {p.id: p for p in db.scalars(select(Provider)).all()}
         panel = [
@@ -660,7 +677,7 @@ def _load_context(run_id: str) -> dict | None:
             else None
         )
         return {
-            "prompt": run.prompt,
+            "prompt": prompt,
             "images": images,
             "config": dict(run.config_json or {}),
             "panel": panel,

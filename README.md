@@ -58,6 +58,7 @@ own keys.
 - [Quick start (local)](#-quick-start-local)
 - [Connect your AI providers](#-connect-your-ai-providers)
 - [How it works](#-how-it-works)
+- [Deliberation — the research behind it](#-model-deliberation--the-research-behind-it)
 - [Tech stack](#-tech-stack)
 - [Security notes](#-security-notes)
 - [Documentation](#-documentation)
@@ -133,6 +134,24 @@ sign-in** (ChatGPT, Claude Pro/Max, Copilot). Keys are encrypted and disabled un
 ### 🖼️ Rich rendering
 **Markdown + GFM**, syntax-highlighted code with collapse, **Mermaid** diagrams (export to
 PNG), and **image vision** input for models that support it.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### ⚖️ Model deliberation
+Put a **panel of models** through blind drafts, anonymous claim-level peer review and
+explicit `APPROVE` / `REJECT` verdicts. Converges only on real agreement — otherwise it
+hands you a **minority report** of what stayed contested. [The research behind it ↓](#-model-deliberation--the-research-behind-it)
+
+</td>
+<td width="50%" valign="top">
+
+### 🔍 Auditable by design
+Every deliberation records the **exact prompt each model saw**, what it accepted or
+rejected and why, who changed position and what changed it. Export the whole trail as
+**PDF / Markdown / Word / JSON**.
 
 </td>
 </tr>
@@ -363,9 +382,171 @@ flowchart LR
     BE --> FILES[[Uploads / run mirror]]
 ```
 
-The fan-out streaming engine is `backend/app/broadcast.py`; providers live under
-`backend/app/providers/`, tools under `backend/app/tools/`, and the UI under
-`frontend/src/`.
+The fan-out streaming engine, the provider abstraction, and the tool implementations all
+live in the backend; the browser only ever talks to the API.
+
+## ⚖️ Model Deliberation — the research behind it
+
+> **MultiChat Deliberation is an AI-only adaptation of the deliberative pattern
+> demonstrated by DeepMind's Habermas Machine. It combines blind multi-model reasoning,
+> anonymous claim-level peer review, iterative revision, explicit convergence criteria and
+> minority-report preservation to produce an auditable synthesis rather than a simple
+> majority vote.**
+
+### The protocol
+
+**Deliberate** mode runs a panel of models through a structured protocol rather than just
+showing you N answers side by side:
+
+1. **Draft** — every panelist answers blind, in parallel, behind a barrier so nobody sees
+   a peer first.
+2. **Critique** — each panelist reviews all peers *anonymized and shuffled* (peer
+   confidence hidden) and returns `APPROVE` / `REQUEST_CHANGES` / `REJECT` per claim, with
+   a required reason for every rejection, then revises its own answer.
+3. **Gate** — convergence is only declared when every *responding* peer approves;
+   otherwise another round runs (up to `max_rounds`).
+4. **Synthesis** — a model that did *not* win the round merges what survived and emits a
+   **minority report** of what stayed unresolved.
+5. **Synthesis critique** — a different model audits the synthesis for papered-over
+   disagreement, and the synthesizer revises once.
+
+Crucially, consensus is **not** inferred from answers merely sounding alike. A
+deliberation converges only when every responding model explicitly approves and no
+unresolved objections remain. If agreement cannot be reached, the contested claims are
+preserved in a minority report rather than concealed inside an artificially unified
+answer.
+
+### Scientific foundation
+
+The design descends from Google DeepMind's **Habermas Machine**, a system built to help
+groups find common ground through AI-mediated deliberation. Participants first express
+their positions privately; an AI mediator generates candidate group statements;
+participants critique them; the system iteratively produces a revised statement meant to
+capture both common ground and continuing disagreement. Across experiments with **5,734
+participants**, AI-mediated statements were preferred to human-mediated ones and were
+found to incorporate dissenting perspectives while respecting the majority position
+([Tessler et al., *Science*, 2024](https://www.science.org/doi/10.1126/science.adq2852)).
+
+MultiChat transfers that deliberative structure into an **AI-only setting**. Instead of
+humans supplying the initial positions and critiques, several independently developed
+language models form a temporary deliberative council: each answers without seeing the
+others, reviews anonymized peer claims, gives explicit reasons for disagreement, and
+revises its position only when a peer identifies new evidence or a concrete error.
+
+The approach is further supported by research into **multi-agent debate**: multiple
+language-model instances that propose, critique and revise answers over several rounds
+measurably improve factuality and reasoning on evaluated tasks
+([Du et al., ICML 2024](https://composable-models.github.io/llm_debate/)).
+
+That literature also names the failure mode such systems must defend against — models
+turning sycophantic and abandoning independent reasoning to agree prematurely with their
+peers, a "disagreement collapse"
+([Yao et al., 2025](https://arxiv.org/abs/2509.23055)). Every guard in the protocol above
+exists to counter it: blind initial drafts, anonymous peers, hidden peer confidence,
+mandatory justification for rejection, traceable reasons for changing position, bounded
+rounds, and an independent review of the synthesis.
+
+The result closely mirrors the established **Delphi method** of expert consensus
+formation, whose defining characteristics are independent initial judgments, anonymity,
+controlled feedback, iteration and an explicit consensus criterion
+([Nasa et al., 2021](https://pmc.ncbi.nlm.nih.gov/articles/PMC8299905/)).
+
+MultiChat Deliberation can therefore be read as a synthesis of three research traditions:
+
+| Tradition | Principle it contributes |
+| --- | --- |
+| **Habermasian deliberation** | Agreement should emerge through equal, reason-giving discourse |
+| **AI-mediated consensus** | A mediator synthesizes common ground *while retaining dissent* |
+| **Multi-agent debate** | Independent models challenge and revise one another's reasoning |
+
+### Side by side with the Habermas Machine
+
+The Habermas Machine takes individual human opinions, generates candidate group
+statements, predicts each person's ranking of them with a personalized reward model,
+selects the candidate that maximizes a social welfare function, then revises it after a
+human critique round. MultiChat runs the same *shape* with models as the deliberators:
+
+```mermaid
+flowchart TB
+    subgraph HM["🏛️ Habermas Machine — people deliberate"]
+        direction TB
+        H1["N people write their<br/>own opinions"]
+        H2["LLM drafts k candidate<br/>group statements"]
+        H3["Reward model predicts<br/>each person's ranking"]
+        H4["Social welfare function<br/>picks the winner"]
+        H5["People critique it"]
+        H6["Revised group statement"]
+        H1 --> H2 --> H3 --> H4 --> H5 --> H6
+    end
+
+    subgraph MC["⚖️ MultiChat Deliberate — models deliberate"]
+        direction TB
+        M1["User question"]
+        M2["Panel drafts blind,<br/>in parallel · barrier"]
+        M3["Peers anonymised + shuffled<br/>APPROVE · REQUEST_CHANGES · REJECT"]
+        M4{"Every responding<br/>peer approves?"}
+        M5["Off-panel model synthesises<br/>+ writes a minority report"]
+        M6["A different model audits<br/>for papered-over disagreement"]
+        M7["Consensus +<br/>unresolved disagreements"]
+        M1 --> M2 --> M3 --> M4
+        M4 -->|"no · next round"| M3
+        M4 -->|"yes"| M5
+        M5 --> M6 --> M7
+    end
+
+    classDef people fill:#DBEAFE,stroke:#2563EB,stroke-width:2px,color:#12306E
+    classDef pick fill:#FDE68A,stroke:#D97706,stroke-width:2px,color:#6B3F05
+    classDef panel fill:#EDE9FE,stroke:#7C3AED,stroke-width:2px,color:#3B1173
+    classDef gate fill:#FBCFE8,stroke:#DB2777,stroke-width:2px,color:#6B0F3E
+    classDef merge fill:#CCFBF1,stroke:#0D9488,stroke-width:2px,color:#0A4B45
+    classDef out fill:#DCFCE7,stroke:#16A34A,stroke-width:2px,color:#0B4A21
+
+    class H1,H5 people
+    class H2,H3 panel
+    class H4 pick
+    class H6 out
+    class M1 people
+    class M2,M3 panel
+    class M4 gate
+    class M5,M6 merge
+    class M7 out
+
+    style HM fill:#F8FAFC,stroke:#64748B,stroke-width:2px,color:#0F172A
+    style MC fill:#F8FAFC,stroke:#64748B,stroke-width:2px,color:#0F172A
+```
+
+The similarities are real — and so are the differences:
+
+| | Habermas Machine | MultiChat Deliberate |
+| --- | --- | --- |
+| **Deliberators** | Humans | LLM panelists |
+| **Preference signal** | Trained personal reward model | Models' own stated verdicts |
+| **Aggregation** | Social welfare over predicted rankings | Unanimity-of-responders gate + LLM synthesis |
+| **Candidate selection** | Generate *k* statements, pick argmax welfare | Chain (draft → critique → revise), not select-from-*k* |
+| **Minority handling** | Egalitarian welfare term | Minority report (narrative, not weighted) |
+| **Goal** | Legitimacy / common ground among people | Answer quality + an auditable trail |
+
+The closest structural match is **Quick mode**, which puts the drafts on a shared shuffled
+slate and settles them with a **Borda count** — voters are never told which entry is their
+own. Same selection idea, with models as the electorate and no learned reward model.
+
+> **Honest caveat:** in our own benchmark (four arms scored blind by an off-panel judge)
+> the full council arm did *not* beat a single synthesis pass — drafts plus one merge call
+> scored higher than drafts plus multiple critique rounds, at a fraction of the cost.
+> Consistent with the Habermas result, the value appears to sit in the **aggregation** step
+> rather than in the debate rounds. Reach for the council when the *disagreement* is the
+> product.
+
+### References
+
+- Tessler et al. (2024) — *AI can help humans find common ground in democratic
+  deliberation*, **Science**. [science.org](https://www.science.org/doi/10.1126/science.adq2852)
+- Du et al. (2024) — *Improving Factuality and Reasoning in Language Models through
+  Multiagent Debate*, **ICML**. [project page](https://composable-models.github.io/llm_debate/)
+- Yao et al. (2025) — on sycophancy and disagreement collapse in multi-agent debate.
+  [arXiv:2509.23055](https://arxiv.org/abs/2509.23055)
+- Nasa et al. (2021) — *Delphi methodology in healthcare research*.
+  [PMC8299905](https://pmc.ncbi.nlm.nih.gov/articles/PMC8299905/)
 
 ## 🔧 Tech stack
 

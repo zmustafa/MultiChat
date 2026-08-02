@@ -16,6 +16,7 @@ from ..documents import document_prompt_block
 from ..export import export_message_pdf, export_session as build_export_file
 from ..models import (
     Attachment,
+    DeliberationRun,
     GeneratedFile,
     Lane,
     LaneMessage,
@@ -173,13 +174,22 @@ def _build_user_message(db: DbSession, turn: Turn) -> ChatMessage:
 def list_sessions(
     user: User = Depends(current_user), db: DbSession = Depends(get_db)
 ) -> list[SessionListItem]:
-    # Deliberations are sessions too, but they are not chats — they have their own list
-    # and their own page, so showing them here would send the user to the wrong view.
+    # Deliberations are sessions too, and they live in the same list as chats — pinning,
+    # renaming, archiving and trashing are session-level features, so keeping them out of
+    # this list was the only reason they lacked all of it.
     rows = db.scalars(
         select(ChatSession)
-        .where(ChatSession.user_id == user.id, ChatSession.mode != "deliberation")
+        .where(ChatSession.user_id == user.id)
         .order_by(ChatSession.updated_at.desc())
     ).all()
+    # Latest run per deliberation session, fetched in one pass rather than per row.
+    runs: dict[str, DeliberationRun] = {}
+    for run in db.scalars(
+        select(DeliberationRun)
+        .where(DeliberationRun.user_id == user.id)
+        .order_by(DeliberationRun.created_at)
+    ).all():
+        runs[run.session_id] = run
     out = []
     for s in rows:
         count = db.scalar(
@@ -188,6 +198,7 @@ def list_sessions(
         msg_count = db.scalar(
             select(func.count(Turn.id)).where(Turn.session_id == s.id)
         )
+        run = runs.get(s.id) if s.mode == "deliberation" else None
         out.append(
             SessionListItem(
                 id=s.id,
@@ -199,6 +210,11 @@ def list_sessions(
                 pinned=bool(s.pinned),
                 archived=bool(s.archived),
                 trashed=bool(s.trashed),
+                mode=s.mode or "compare",
+                run_id=run.id if run else None,
+                status=run.status if run else None,
+                converged=bool(run.converged) if run else None,
+                total_calls=run.total_calls if run else None,
             )
         )
     return out
@@ -722,6 +738,13 @@ def delete_session(
     db: DbSession = Depends(get_db),
 ):
     s = _get_session(db, user, session_id)
+    # A deliberation's run rows point at this session by id, not by foreign key, so they
+    # have to be removed here — otherwise a deleted panel keeps appearing in the
+    # deliberation list and opens a page with nothing behind it.
+    for run in db.scalars(
+        select(DeliberationRun).where(DeliberationRun.session_id == s.id)
+    ).all():
+        db.delete(run)
     db.delete(s)
     db.commit()
 

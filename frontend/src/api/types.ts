@@ -116,6 +116,12 @@ export interface SessionListItem {
   pinned: boolean;
   archived: boolean;
   trashed: boolean;
+  /** "compare" for a chat, "deliberation" for a panel (opens /d/:run_id instead). */
+  mode?: string;
+  run_id?: string | null;
+  status?: string | null;
+  converged?: boolean | null;
+  total_calls?: number | null;
 }
 
 export interface SessionDetail {

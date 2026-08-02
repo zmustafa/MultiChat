@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate } from "react-router";
 import { asUtcDate } from "../api/client";
 import type { Persona, SearchHit, SessionListItem } from "../api/types";
 import { searchSessions, useFolderMutations, useFolders, useUserSettings } from "../hooks/useExtras";
 import { useDismiss } from "../hooks/useDismiss";
 import { useSessionMutations } from "../hooks/useSessions";
-import { listDeliberations } from "../api/deliberation";
 
 interface Props {
   sessions: SessionListItem[];
@@ -44,10 +44,6 @@ export function SessionSidebar({
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
-  const [showDeliberations, setShowDeliberations] = useState(true);
-  const [deliberations, setDeliberations] = useState<
-    { id: string; prompt: string; status: string; converged: boolean; created_at: string }[]
-  >([]);
   const navigate = useNavigate();
   const { data: userSettings } = useUserSettings();
 
@@ -69,6 +65,11 @@ export function SessionSidebar({
   const [results, setResults] = useState<SearchHit[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
+  // Chats and panels share one list; this narrows it without splitting it again.
+  const [kind, setKind] = useState<"all" | "chat" | "panel">(
+    () => (localStorage.getItem("multichat_sidebar_kind") as "all") || "all",
+  );
+  const [picked, setPicked] = useState<Set<string>>(new Set());
   // Keep the Settings section expanded whenever we're on any settings-related route, so it
   // doesn't collapse when navigating between settings pages (each renders a fresh sidebar).
   const location = useLocation();
@@ -84,6 +85,7 @@ export function SessionSidebar({
   const { data: folders = [] } = useFolders();
   const folderMut = useFolderMutations();
   const sm = useSessionMutations();
+  const queryClient = useQueryClient();
   const newMenuRef = useRef<HTMLDivElement>(null);
   useDismiss(newMenuRef, menuOpen, () => setMenuOpen(false));
 
@@ -103,22 +105,24 @@ export function SessionSidebar({
   const patch = (id: string, body: Record<string, unknown>) =>
     sm.update.mutate({ id, body });
 
-  // Deliberations are not chats, so they get their own list rather than being mixed in.
+  // A running panel settles on its own in the background, so refresh the list while one
+  // is in flight — and only then. Nothing else here needs polling.
+  const anyRunning = sessions.some(
+    (s) => s.status === "running" || s.status === "pending",
+  );
   useEffect(() => {
-    let cancelled = false;
-    const load = () =>
-      listDeliberations(15)
-        .then((rows) => !cancelled && setDeliberations(rows))
-        .catch(() => undefined);
-    void load();
-    // Refresh while one is in flight so its status settles without a manual reload.
-    const timer = setInterval(load, 15000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-    // Re-read on navigation so a run started from the compose screen shows up at once.
-  }, [location.pathname]);
+    if (!anyRunning) return;
+    const timer = setInterval(
+      () => queryClient.invalidateQueries({ queryKey: ["sessions"] }),
+      10000,
+    );
+    return () => clearInterval(timer);
+  }, [anyRunning, queryClient]);
+
+  // A run started from the compose screen appears as soon as navigation settles.
+  useEffect(() => {
+    void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+  }, [location.pathname, queryClient]);
 
   return (
     <div className="flex h-full w-60 shrink-0 flex-col border-r border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-950">
@@ -307,6 +311,31 @@ export function SessionSidebar({
           placeholder="🔍 Search chats…"
           className="w-full rounded border border-gray-300 px-2 py-1 text-xs dark:border-gray-600 dark:bg-gray-800"
         />
+        {/* Chats and panels live in one list; this narrows it without splitting it. */}
+        <div className="mt-1 flex gap-1">
+          {(
+            [
+              ["all", "All"],
+              ["chat", "💬 Chats"],
+              ["panel", "⚖️ Panels"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              onClick={() => {
+                setKind(value);
+                localStorage.setItem("multichat_sidebar_kind", value);
+              }}
+              className={`flex-1 rounded px-1 py-0.5 text-[10px] ${
+                kind === value
+                  ? "bg-brand/10 font-semibold text-brand"
+                  : "text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto">
         {query.trim() ? (
@@ -314,69 +343,34 @@ export function SessionSidebar({
             {results.length === 0 ? (
               <div className="p-3 text-xs text-gray-500">No matches.</div>
             ) : (
-              results.map((r) => (
-                <button
-                  key={r.session_id}
-                  onClick={() => {
-                    onSelect(r.session_id);
-                    setQuery("");
-                  }}
-                  className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800"
-                >
-                  <div className="truncate font-medium">{r.title}</div>
-                  {r.snippet && (
-                    <div className="truncate text-xs text-gray-400">{r.snippet}</div>
-                  )}
-                </button>
-              ))
+              results.map((r) => {
+                // A hit can belong to a deliberation; send it to the right page.
+                const owner = sessions.find((s) => s.id === r.session_id);
+                const delib = owner?.mode === "deliberation" && owner.run_id;
+                return (
+                  <button
+                    key={r.session_id}
+                    onClick={() => {
+                      if (delib) navigate(`/d/${owner!.run_id}`);
+                      else onSelect(r.session_id);
+                      setQuery("");
+                    }}
+                    className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800"
+                  >
+                    <div className="truncate font-medium">
+                      {delib ? "⚖️ " : "💬 "}
+                      {r.title}
+                    </div>
+                    {r.snippet && (
+                      <div className="truncate text-xs text-gray-400">{r.snippet}</div>
+                    )}
+                  </button>
+                );
+              })
             )}
           </div>
         ) : (
           <>
-            {/* Deliberations sit above the chat list: there are only ever a handful, and a
-                long chat history would otherwise push them far below the fold. */}
-            {deliberations.length > 0 && (
-              <div className="border-b border-gray-200 pb-1 dark:border-gray-800">
-                <button
-                  onClick={() => setShowDeliberations((v) => !v)}
-                  className="flex w-full items-center px-3 pt-2 text-[10px] font-semibold uppercase tracking-wide text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                >
-                  ⚖️ Deliberations ({deliberations.length}){" "}
-                  <span className="ml-1">{showDeliberations ? "▾" : "▸"}</span>
-                </button>
-                {showDeliberations &&
-                  deliberations.map((d) => (
-                    <button
-                      key={d.id}
-                      onClick={() => navigate(`/d/${d.id}`)}
-                      className={`block w-full px-3 py-1.5 text-left ${
-                        location.pathname === `/d/${d.id}`
-                          ? "bg-brand/10"
-                          : "hover:bg-gray-100 dark:hover:bg-gray-800"
-                      }`}
-                      title={d.prompt}
-                    >
-                      <span
-                        className={`block truncate text-sm ${
-                          location.pathname === `/d/${d.id}`
-                            ? "text-brand"
-                            : "text-gray-700 dark:text-gray-200"
-                        }`}
-                      >
-                        {d.prompt || "Deliberation"}
-                      </span>
-                      <span className="block truncate text-[11px] text-gray-400">
-                        {relTime(d.created_at)} ·{" "}
-                        {d.status === "running" || d.status === "pending"
-                          ? "running…"
-                          : d.converged
-                            ? "converged"
-                            : d.status.replace("_", " ")}
-                      </span>
-                    </button>
-                  ))}
-              </div>
-            )}
             {renderGroup(
               "Pinned",
               sessions.filter((s) => s.pinned && !s.archived && !s.trashed)
@@ -451,8 +445,40 @@ export function SessionSidebar({
                     {sm.emptyTrash.isPending ? "Emptying…" : "Empty"}
                   </button>
                 </div>
-                {showTrash &&
-                  sessions.filter((s) => s.trashed).map((s) => renderRow(s, true))}
+                {showTrash && (
+                  <>
+                    {picked.size > 0 && (
+                      <div className="flex items-center gap-2 px-3 py-1 text-[10px] text-gray-500">
+                        <span>{picked.size} selected</span>
+                        <button
+                          onClick={() => {
+                            if (
+                              confirm(
+                                `Permanently delete ${picked.size} item(s)? This cannot be undone.`,
+                              )
+                            ) {
+                              picked.forEach((id) => onDelete(id));
+                              setPicked(new Set());
+                            }
+                          }}
+                          className="font-medium text-red-500 hover:underline"
+                        >
+                          Delete selected
+                        </button>
+                        <button
+                          onClick={() => setPicked(new Set())}
+                          className="hover:underline"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    )}
+                    {sessions
+                      .filter((s) => s.trashed)
+                      .filter(matchesKind)
+                      .map((s) => renderRow(s, true))}
+                  </>
+                )}
               </div>
             )}
             <div className="p-2">
@@ -473,7 +499,8 @@ export function SessionSidebar({
   );
 
   function renderGroup(label: string, items: SessionListItem[]) {
-    if (items.length === 0) return null;
+    const visible = items.filter(matchesKind);
+    if (visible.length === 0) return null;
     return (
       <div>
         {label && (
@@ -481,21 +508,54 @@ export function SessionSidebar({
             {label}
           </div>
         )}
-        {items.map((s) => renderRow(s))}
+        {visible.map((s) => renderRow(s))}
       </div>
     );
   }
 
+  /** The All / Chats / Panels filter, applied everywhere rows are listed. */
+  function matchesKind(s: SessionListItem) {
+    if (kind === "all") return true;
+    const isDelib = s.mode === "deliberation";
+    return kind === "panel" ? isDelib : !isDelib;
+  }
+
   function renderRow(s: SessionListItem, inTrash = false) {
+    // A deliberation is a session like any other; it just opens its own page and reports
+    // a verdict instead of a message count.
+    const isDelib = s.mode === "deliberation";
+    const href = isDelib && s.run_id ? `/d/${s.run_id}` : null;
+    const isActive = href ? location.pathname === href : s.id === activeId;
+    const open = () => (href ? navigate(href) : onSelect(s.id));
+    const verdict =
+      s.status === "running" || s.status === "pending"
+        ? "running…"
+        : s.converged
+          ? "converged"
+          : (s.status || "").replace("_", " ");
     return (
       <div
         key={s.id}
         className={`group flex items-center gap-1 px-2 py-2 text-sm ${
-          s.id === activeId
+          isActive
             ? "bg-brand/10"
             : "hover:bg-gray-100 dark:hover:bg-gray-800"
         }`}
       >
+        {inTrash && (
+          <input
+            type="checkbox"
+            checked={picked.has(s.id)}
+            onChange={(e) => {
+              const next = new Set(picked);
+              if (e.target.checked) next.add(s.id);
+              else next.delete(s.id);
+              setPicked(next);
+            }}
+            title="Select for bulk delete"
+            className="h-3 w-3 shrink-0"
+          />
+        )}
         {editing === s.id ? (
           <input
             autoFocus
@@ -515,21 +575,39 @@ export function SessionSidebar({
           />
         ) : (
           <button
-            onClick={() => onSelect(s.id)}
+            onClick={open}
             onDoubleClick={() => {
               setEditing(s.id);
               setDraft(s.title);
             }}
-            className={`min-w-0 flex-1 text-left ${s.id === activeId ? "text-brand" : "text-gray-700 dark:text-gray-200"}`}
+            className={`flex min-w-0 flex-1 items-start gap-1.5 text-left ${isActive ? "text-brand" : "text-gray-700 dark:text-gray-200"}`}
           >
-            <div className="truncate font-medium">
-              {s.pinned && "📌 "}
-              {s.title}
-            </div>
-            <div className="truncate text-xs text-gray-500 dark:text-gray-400">
-              {relTime(s.updated_at)} · {s.lane_count} lanes · {s.message_count}{" "}
-              msg{s.message_count === 1 ? "" : "s"}
-            </div>
+            <span
+              className="w-4 shrink-0 pt-0.5 text-center text-xs"
+              title={isDelib ? "Deliberation" : "Chat"}
+            >
+              {isDelib ? "⚖️" : "💬"}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate font-medium">
+                {s.pinned && "📌 "}
+                {s.title}
+              </span>
+              <span className="block truncate text-xs text-gray-500 dark:text-gray-400">
+                {isDelib ? (
+                  <>
+                    {relTime(s.updated_at)} · {s.lane_count} model
+                    {s.lane_count === 1 ? "" : "s"} · {verdict}
+                    {s.total_calls ? ` · ${s.total_calls} calls` : ""}
+                  </>
+                ) : (
+                  <>
+                    {relTime(s.updated_at)} · {s.lane_count} lanes · {s.message_count}{" "}
+                    msg{s.message_count === 1 ? "" : "s"}
+                  </>
+                )}
+              </span>
+            </span>
           </button>
         )}
         {generatingIds?.has(s.id) && (

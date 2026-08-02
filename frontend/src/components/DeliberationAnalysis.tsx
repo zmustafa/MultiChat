@@ -183,6 +183,14 @@ export function DeliberationAnalysis({
 
         <section className="border-t border-gray-200 pt-2 text-[10px] text-gray-500 dark:border-gray-700">
           {totalCalls} model calls · {(wallMs / 1000).toFixed(0)}s wall clock
+          {" · "}
+          <a
+            href="/analytics"
+            className="text-brand hover:underline"
+            title="Which models earn their seat, across every deliberation"
+          >
+            Council leaderboard →
+          </a>
         </section>
       </div>
     </aside>

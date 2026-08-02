@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router";
 import type { Persona, SessionListItem } from "../api/types";
 
 export interface Command {
@@ -36,6 +37,7 @@ export function CommandPalette({
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     if (open) {
@@ -60,15 +62,19 @@ export function CommandPalette({
       ...extraCommands.map((c) => ({ ...c, run: () => { c.run(); onClose(); } })),
       ...sessions.slice(0, 50).map((s) => ({
         id: `sess-${s.id}`,
-        label: s.title,
-        hint: "go to chat",
-        run: () => { onSelectSession(s.id); onClose(); },
+        label: `${s.mode === "deliberation" ? "⚖️" : "💬"} ${s.title}`,
+        hint: s.mode === "deliberation" ? "go to deliberation" : "go to chat",
+        run: () => {
+          if (s.mode === "deliberation" && s.run_id) navigate(`/d/${s.run_id}`);
+          else onSelectSession(s.id);
+          onClose();
+        },
       })),
     ];
     const term = q.trim().toLowerCase();
     if (!term) return base;
     return base.filter((c) => c.label.toLowerCase().includes(term));
-  }, [q, sessions, personas, extraCommands, onNew, onClose, onSelectSession, onOpenSettings, onToggleTheme, onToggleDiff]);
+  }, [q, sessions, personas, extraCommands, onNew, onClose, onSelectSession, onOpenSettings, onToggleTheme, onToggleDiff, navigate]);
 
   if (!open) return null;
 

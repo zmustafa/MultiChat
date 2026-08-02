@@ -940,6 +940,64 @@ export function ComparePage() {
     />
   );
 
+  // The palette is shown on both views, so it is built once here rather than duplicated
+  // in the deliberation branch below.
+  const deliberationRunId = runId && runId !== "new" ? runId : null;
+  const fireDeliberation = (action: string) =>
+    window.dispatchEvent(new CustomEvent("multichat:deliberation", { detail: action }));
+  const palette = (
+    <CommandPalette
+      open={paletteOpen}
+      onClose={() => setPaletteOpen(false)}
+      sessions={sessions}
+      personas={personas}
+      onSelectSession={setActiveId}
+      onNew={newTopic}
+      onOpenSettings={() => nav("/settings")}
+      onToggleTheme={theme.toggle}
+      onToggleDiff={() => setShowDiff((d) => !d)}
+      extraCommands={
+        deliberationRunId
+          ? [
+              // The deliberation view owns this state, so the palette raises an event it
+              // listens for rather than hoisting all of that state into this page.
+              { id: "cmd-d-analysis", label: "Deliberation: toggle Analysis", hint: "panel", run: () => fireDeliberation("analysis") },
+              { id: "cmd-d-expand", label: "Deliberation: expand every answer", hint: "view", run: () => fireDeliberation("expand") },
+              { id: "cmd-d-export", label: "Deliberation: export as PDF", hint: "export", run: () => fireDeliberation("export") },
+              { id: "cmd-d-stop", label: "Deliberation: stop the panel", hint: "run", run: () => fireDeliberation("stop") },
+              { id: "cmd-d-rerun", label: "Deliberation: re-run this question", hint: "run", run: () => fireDeliberation("rerun") },
+            ]
+          : session
+            ? [
+                { id: "cmd-files", label: "Toggle Files panel", hint: "panel", run: () => setShowFiles((v) => !v) },
+                { id: "cmd-snapshots", label: "Toggle Pinned answers (compare runs)", hint: "panel", run: () => setShowSnapshots((v) => !v) },
+                { id: "cmd-insights", label: "Toggle Insights", hint: "panel", run: () => setShowInsights((v) => !v) },
+                { id: "cmd-prompt", label: "Toggle Prompt drawer", hint: "panel", run: () => setPromptOpen((v) => !v) },
+                { id: "cmd-fit", label: "Toggle Fit-to-screen", hint: "layout", run: () => setFitToScreen((v) => !v) },
+                { id: "cmd-export-pdf", label: "Export comparison as PDF", hint: "export", run: () => exportComparison("pdf") },
+                { id: "cmd-export-docx", label: "Export comparison as Word", hint: "export", run: () => exportComparison("docx") },
+                { id: "cmd-export-md", label: "Export comparison as Markdown", hint: "export", run: () => exportComparison("md") },
+                { id: "cmd-backup", label: "Full system backup (Settings)", hint: "backup", run: () => exportEverything() },
+                {
+                  id: "cmd-vision",
+                  label: "Extract data from an image → table",
+                  hint: "vision",
+                  run: () =>
+                    setEditDraft({
+                      text:
+                        "Attached is an image (a chart, screenshot, or table). Extract all the data from it into a clean Markdown table, and note any titles, axes, or units.",
+                      ts: Date.now(),
+                    }),
+                },
+                ...(latestTurn
+                  ? [{ id: "cmd-branch", label: "Branch from the latest turn", hint: "fork", run: () => branchFrom(latestTurn.id) }]
+                  : []),
+              ]
+            : []
+      }
+    />
+  );
+
   // A deliberation opens in place of the lanes rather than on its own page, so the
   // sidebar stays put and picking one feels like switching to any other conversation.
   // "/d/new" is the compose screen: a deliberation needs its question before it exists.
@@ -952,6 +1010,7 @@ export function ComparePage() {
         ) : (
           <DeliberationView runId={runId} />
         )}
+        {palette}
       </div>
     );
 
@@ -1513,46 +1572,7 @@ export function ComparePage() {
 
       {showArtifacts && <ArtifactPanel onClose={() => setShowArtifacts(false)} />}
 
-      <CommandPalette
-        open={paletteOpen}
-        onClose={() => setPaletteOpen(false)}
-        sessions={sessions}
-        personas={personas}
-        onSelectSession={setActiveId}
-        onNew={newTopic}
-        onOpenSettings={() => nav("/settings")}
-        onToggleTheme={theme.toggle}
-        onToggleDiff={() => setShowDiff((d) => !d)}
-        extraCommands={
-          session
-            ? [
-                { id: "cmd-files", label: "Toggle Files panel", hint: "panel", run: () => setShowFiles((v) => !v) },
-                { id: "cmd-snapshots", label: "Toggle Pinned answers (compare runs)", hint: "panel", run: () => setShowSnapshots((v) => !v) },
-                { id: "cmd-insights", label: "Toggle Insights", hint: "panel", run: () => setShowInsights((v) => !v) },
-                { id: "cmd-prompt", label: "Toggle Prompt drawer", hint: "panel", run: () => setPromptOpen((v) => !v) },
-                { id: "cmd-fit", label: "Toggle Fit-to-screen", hint: "layout", run: () => setFitToScreen((v) => !v) },
-                { id: "cmd-export-pdf", label: "Export comparison as PDF", hint: "export", run: () => exportComparison("pdf") },
-                { id: "cmd-export-docx", label: "Export comparison as Word", hint: "export", run: () => exportComparison("docx") },
-                { id: "cmd-export-md", label: "Export comparison as Markdown", hint: "export", run: () => exportComparison("md") },
-                { id: "cmd-backup", label: "Full system backup (Settings)", hint: "backup", run: () => exportEverything() },
-                {
-                  id: "cmd-vision",
-                  label: "Extract data from an image → table",
-                  hint: "vision",
-                  run: () =>
-                    setEditDraft({
-                      text:
-                        "Attached is an image (a chart, screenshot, or table). Extract all the data from it into a clean Markdown table, and note any titles, axes, or units.",
-                      ts: Date.now(),
-                    }),
-                },
-                ...(latestTurn
-                  ? [{ id: "cmd-branch", label: "Branch from the latest turn", hint: "fork", run: () => branchFrom(latestTurn.id) }]
-                  : []),
-              ]
-            : []
-        }
-      />
+      {palette}
     </div>
   );
 }
