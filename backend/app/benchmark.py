@@ -28,6 +28,7 @@ from .broadcast import sse
 from .config import settings
 from .convergence import borda_count, score_round
 from .db import SessionLocal
+from .errors import log_and_describe
 from .deliberation import (
     CRITIQUE_SCHEMA,
     CRITIQUE_SYSTEM,
@@ -82,7 +83,8 @@ async def _bounded(jobs: list[Any], concurrency: int) -> list[Any]:
             try:
                 return await job()
             except Exception as exc:  # noqa: BLE001 — one arm failing must not stop the rest
-                return {"error": str(exc)}
+                # This result is streamed to the browser; keep the traceback in the log.
+                return {"error": log_and_describe(exc, "benchmark arm failed")}
 
     return await asyncio.gather(*(guarded(j) for j in jobs))
 

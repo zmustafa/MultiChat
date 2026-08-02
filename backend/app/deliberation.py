@@ -50,6 +50,7 @@ from .convergence import (
 )
 from .db import SessionLocal
 from .documents import document_prompt_block
+from .errors import log_and_describe
 from .models import (
     DeliberationRun,
     DeliberationStep,
@@ -522,7 +523,9 @@ async def _run_step(
             fallback_field="revised_answer" if phase == "critique" else "answer",
         )
     except Exception as exc:  # noqa: BLE001 — a failed panelist must not fail the run
-        error = str(exc)
+        # The client sees the run's progress live, so this text reaches a browser: keep
+        # the traceback (and any SQL or credentials in it) in the log instead.
+        error = log_and_describe(exc, f"deliberation {run_id} step {step_id} failed")
 
     payload = {
         "step_id": step_id,
@@ -577,7 +580,9 @@ async def _run_step(
         db.commit()
     except Exception as exc:  # noqa: BLE001
         db.rollback()
-        error = error or str(exc)
+        error = error or log_and_describe(
+            exc, f"deliberation {run_id} step {step_id} could not be persisted"
+        )
     finally:
         db.close()
 
@@ -619,7 +624,12 @@ async def _fan_out(jobs: list[Any], concurrency: int) -> list[dict]:
             try:
                 results[index] = await job()
             except Exception as exc:  # noqa: BLE001
-                results[index] = {"ok": False, "error": str(exc), "output": {}, "verdict": None}
+                results[index] = {
+                    "ok": False,
+                    "error": log_and_describe(exc, "deliberation job failed"),
+                    "output": {},
+                    "verdict": None,
+                }
 
     await asyncio.gather(*(guarded(i, j) for i, j in enumerate(jobs)))
     return results
@@ -1211,8 +1221,9 @@ async def _drive(run_id: str, hub: _Hub) -> None:
         pass
     except Exception as exc:  # noqa: BLE001
         status = "failed"
-        _save(run_id, error=str(exc))
-        hub.publish(_sse_step("delib_error", {"detail": str(exc)}))
+        detail = log_and_describe(exc, f"deliberation {run_id} failed")
+        _save(run_id, error=detail)
+        hub.publish(_sse_step("delib_error", {"detail": detail}))
     finally:
         wall = int((time.monotonic() - started) * 1000)
         _save(

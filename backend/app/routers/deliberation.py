@@ -19,6 +19,7 @@ from ..config import settings
 from ..db import get_db
 from ..benchmark import ARMS, run_benchmark
 from ..deliberation import is_running, request_stop, stream_run
+from ..errors import log_and_describe
 from ..models import (
     Attachment,
     DeliberationRun,
@@ -589,7 +590,10 @@ def export_run(
     try:
         stored_name, download_name, mime = export_deliberation(db, run, fmt)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Export failed: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Export failed: {log_and_describe(exc, f'deliberation {run.id} export failed')}",
+        )
     path = os.path.join(settings.UPLOAD_DIR, "generated", stored_name)
     db.add(
         GeneratedFile(
