@@ -5,6 +5,7 @@ import { usePersonas } from "../hooks/usePersonas";
 import { useProviders } from "../hooks/useProviders";
 import { useSessions, useSessionMutations, useActiveSessions } from "../hooks/useSessions";
 import { seedLaneCollapse } from "../utils/laneCollapse";
+import { forgetLast } from "../utils/lastLocation";
 import { resolvePersonaLanes } from "../utils/personaLanes";
 import { SessionSidebar } from "./SessionSidebar";
 
@@ -93,6 +94,8 @@ export function SidebarNav() {
       onCollapse={() => setNavCollapsed(true)}
       onRename={(id, title) => sm.update.mutate({ id, body: { title } })}
       onDelete={(id) => {
+        const gone = sessions.find((s) => s.id === id);
+        forgetLast(gone?.run_id ? `/d/${gone.run_id}` : `/c/${id}`);
         if (id === activeId) {
           // Auto-focus the next available chat: prefer the one just below the deleted
           // chat, else the one just above, else clear if none remain.

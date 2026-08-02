@@ -26,6 +26,7 @@ import { usePersonas, usePersonaMutations } from "../hooks/usePersonas";
 import { useProviders } from "../hooks/useProviders";
 import { useTheme } from "../hooks/useTheme";
 import { seedLaneCollapse } from "../utils/laneCollapse";
+import { forgetLast, readLast, rememberLast } from "../utils/lastLocation";
 import { resolvePersonaLanes } from "../utils/personaLanes";
 import {
   useActiveSessions,
@@ -179,16 +180,26 @@ export function ComparePage() {
   }, []);
 
   useEffect(() => {
-    if (activeId && session) localStorage.setItem("multichat_active", activeId);
+    if (activeId && session) {
+      localStorage.setItem("multichat_active", activeId);
+      rememberLast(`/c/${activeId}`);
+    }
   }, [activeId, session]);
 
-  // When landing on "/" with no chat selected, restore the last-opened chat (if any)
-  // so its permanent link is reflected in the URL. A deliberation (/d/:runId) is its
-  // own destination, so don't yank the user out of it.
+  // A deliberation is a conversation too, so it is remembered the same way a chat is.
+  // Guarded on the run still being listed so a stale/typed URL isn't restored later.
+  useEffect(() => {
+    if (!runId || runId === "new") return;
+    if (sessions.some((s) => s.run_id === runId && !s.trashed)) rememberLast(`/d/${runId}`);
+  }, [runId, sessions]);
+
+  // When landing on "/" with nothing selected, restore the last-opened conversation
+  // (chat or deliberation) so its permanent link is reflected in the URL. A
+  // deliberation (/d/:runId) is its own destination, so don't yank the user out of it.
   useEffect(() => {
     if (sessionId || runId) return;
-    const last = localStorage.getItem("multichat_active");
-    if (last) nav(`/c/${last}`, { replace: true });
+    const last = readLast();
+    if (last) nav(last, { replace: true });
   }, [sessionId, runId, nav]);
 
   const refresh = () => {
@@ -918,6 +929,8 @@ export function ComparePage() {
       onCollapse={() => setNavCollapsed(true)}
       onRename={(id, title) => sm.update.mutate({ id, body: { title } })}
       onDelete={(id) => {
+        const gone = sessions.find((s) => s.id === id);
+        forgetLast(gone?.run_id ? `/d/${gone.run_id}` : `/c/${id}`);
         if (id === activeId) {
           // Auto-focus the next available chat: prefer the one just below the deleted
           // chat, else the one just above, else clear if none remain.
