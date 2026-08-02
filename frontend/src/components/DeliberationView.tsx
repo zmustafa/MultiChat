@@ -945,6 +945,30 @@ export function DeliberationView({ runId }: { runId: string }) {
         )}
         {showPins && <SnapshotsPanel onClose={() => setShowPins(false)} />}
 
+        {/* Progress lives OUTSIDE the scroll area: a run takes minutes, and "is it still
+            working?" is exactly the question you have while reading further down. */}
+        {running && (
+          <div className="border-b border-indigo-200 bg-indigo-50/70 px-3 py-1.5 text-[11px] text-indigo-800 dark:border-indigo-900 dark:bg-indigo-950/50 dark:text-indigo-200">
+            <span className="font-semibold">
+              {live.phase === "synthesis"
+                ? "Synthesising…"
+                : `Round ${Math.max(0, live.round)}${maxRounds ? ` of ${maxRounds}` : ""}`}
+            </span>
+            <span className="mx-2 text-indigo-400">·</span>
+            {doneSteps} of ~{expectedCalls} model calls
+            <span className="mx-2 text-indigo-400">·</span>
+            {Math.floor(elapsed / 60)}m {String(elapsed % 60).padStart(2, "0")}s
+            <div className="mt-1 h-1 w-full overflow-hidden rounded bg-indigo-100 dark:bg-indigo-900">
+              <div
+                className="h-1 rounded bg-brand transition-all"
+                style={{
+                  width: `${Math.min(100, Math.round((doneSteps / Math.max(1, expectedCalls)) * 100))}%`,
+                }}
+              />
+            </div>
+          </div>
+        )}
+
         <div
           ref={scrollRef}
           onScroll={(e) => {
@@ -961,31 +985,6 @@ export function DeliberationView({ runId }: { runId: string }) {
             className={`${compact ? "space-y-1.5 text-[13px]" : "space-y-3"}`}
             ref={contentRef}
           >
-            {/* While it runs, say where it is: a panel can take minutes and a bare spinner
-                reads as "stuck". */}
-            {running && (
-              <div className="rounded-lg border border-indigo-200 bg-indigo-50/70 px-3 py-1.5 text-[11px] text-indigo-800 dark:border-indigo-900 dark:bg-indigo-950/50 dark:text-indigo-200">
-                <span className="font-semibold">
-                  {live.phase === "synthesis"
-                    ? "Synthesising…"
-                    : `Round ${Math.max(0, live.round)}${
-                        maxRounds ? ` of ${maxRounds}` : ""
-                      }`}
-                </span>
-                <span className="mx-2 text-indigo-400">·</span>
-                {doneSteps} of ~{expectedCalls} model calls
-                <span className="mx-2 text-indigo-400">·</span>
-                {Math.floor(elapsed / 60)}m {String(elapsed % 60).padStart(2, "0")}s
-                <div className="mt-1 h-1 w-full overflow-hidden rounded bg-indigo-100 dark:bg-indigo-900">
-                  <div
-                    className="h-1 rounded bg-brand transition-all"
-                    style={{
-                      width: `${Math.min(100, Math.round((doneSteps / Math.max(1, expectedCalls)) * 100))}%`,
-                    }}
-                  />
-                </div>
-              </div>
-            )}
             {(run?.thread?.length ?? 0) > 1 && (
               <div className="flex flex-wrap items-center gap-1 text-[11px]">
                 <span className="text-gray-400">Thread:</span>
