@@ -693,6 +693,18 @@ def _diagram_card(data: bytes, max_width: float, max_height: float, natural_pt: 
     return DiagramCard()
 
 
+def image_flowable(data: bytes, max_width: float, max_height: float):
+    """Embed arbitrary image bytes (a prompt attachment, say) as a bordered card.
+
+    Returns None when the bytes aren't a readable image, so callers can fall back to
+    naming the file instead of failing the whole export.
+    """
+    try:
+        return _diagram_card(data, max_width, max_height)
+    except Exception:  # noqa: BLE001 — an unreadable image must not sink the document
+        return None
+
+
 def _fit_col_widths(
     cols: list[str], rows: list[list[str]], content_width: float, font_size: float = 8.5
 ) -> list[float]:

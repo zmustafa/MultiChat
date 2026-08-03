@@ -6,6 +6,7 @@ from xml.sax.saxutils import escape
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
+from .config import settings
 from .models import Lane, LaneMessage, Provider, Session as ChatSession, Turn
 from .tools.artifacts import generated_dir, new_stored_name, safe_download_name
 
@@ -14,6 +15,113 @@ _MIME = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "pdf": "application/pdf",
 }
+
+# How tall a prompt attachment may print. Wide enough to read, short enough that a photo
+# doesn't push the answer onto the next page.
+_ATTACHMENT_MAX_HEIGHT = 230.0
+
+
+def _attachment_path(att) -> str:
+    """Absolute path of an upload. ``storage_path`` is DB data, so it never leaves the dir."""
+    return os.path.join(settings.UPLOAD_DIR, os.path.basename(att.storage_path))
+
+
+def _turn_attachment_flowables(turn: Turn | None, content_width: float, caption_style) -> list:
+    """Render what the user attached to a prompt, so the PDF shows the models' actual input.
+
+    Images are embedded; documents are named (their text already reaches the models through
+    the prompt itself). An image that can't be decoded degrades to its filename rather than
+    failing the export.
+    """
+    from reportlab.platypus import Paragraph
+
+    from .markdown_render import image_flowable, pdf_safe
+
+    if turn is None or not turn.attachments:
+        return []
+
+    out: list = []
+    named: list[str] = []
+    for att in turn.attachments:
+        card = None
+        if att.kind == "image":
+            try:
+                with open(_attachment_path(att), "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                data = b""
+            if data:
+                card = image_flowable(data, content_width, _ATTACHMENT_MAX_HEIGHT)
+        if card is None:
+            named.append(att.filename)
+            continue
+        out.append(card)
+        out.append(Paragraph(escape(pdf_safe(att.filename)), caption_style))
+
+    if named:
+        out.append(
+            Paragraph(
+                "Attached: " + escape(pdf_safe(", ".join(named))),
+                caption_style,
+            )
+        )
+    return out
+
+
+def _add_turn_attachments_docx(doc, turn: Turn | None) -> None:
+    """The Word counterpart of :func:`_turn_attachment_flowables`.
+
+    python-docx only understands a handful of image formats, so anything it rejects (webp,
+    typically) is converted to PNG first; whatever still won't go in is named instead.
+    """
+    from docx.shared import Emu, Inches, Pt, RGBColor
+
+    if turn is None or not turn.attachments:
+        return
+
+    max_w, max_h = Inches(5.0), Inches(3.6)
+
+    def caption(text: str) -> None:
+        run = doc.add_paragraph().add_run(text)
+        run.italic = True
+        run.font.size = Pt(8)
+        run.font.color.rgb = RGBColor(0x64, 0x74, 0x8B)
+
+    def place(path: str):
+        try:
+            return doc.add_picture(path)
+        except Exception:  # noqa: BLE001 — unsupported format, try converting it
+            import io
+
+            from PIL import Image
+
+            buf = io.BytesIO()
+            with Image.open(path) as img:
+                img.convert("RGB").save(buf, format="PNG")
+            buf.seek(0)
+            return doc.add_picture(buf)
+
+    named: list[str] = []
+    for att in turn.attachments:
+        if att.kind != "image":
+            named.append(att.filename)
+            continue
+        try:
+            shape = place(_attachment_path(att))
+        except Exception:  # noqa: BLE001 — missing or undecodable, name it instead
+            named.append(att.filename)
+            continue
+        # add_picture uses the image's natural size, which can overflow the page.
+        if shape.width > max_w:
+            shape.height = Emu(int(shape.height * max_w / shape.width))
+            shape.width = max_w
+        if shape.height > max_h:
+            shape.width = Emu(int(shape.width * max_h / shape.height))
+            shape.height = max_h
+        caption(att.filename)
+
+    if named:
+        caption("Attached: " + ", ".join(named))
 
 
 def _gather(db: DbSession, session: ChatSession):
@@ -73,6 +181,7 @@ def _export_docx(db, session, path) -> None:
         run = p.add_run("Prompt: ")
         run.bold = True
         p.add_run(turn.content or "")
+        _add_turn_attachments_docx(doc, turn)
         for lane in lanes:
             msg = by_key.get((lane.id, turn.id))
             if not msg or not msg.content:
@@ -105,6 +214,10 @@ def _export_pdf(db, session, path) -> None:
     prompt_style = ParagraphStyle(
         "Prompt", parent=body, backColor=HexColor("#EEF2FF"), borderPadding=6, spaceAfter=8
     )
+    caption_style = ParagraphStyle(
+        "Caption", parent=body, fontSize=8, leading=11, alignment=1,
+        textColor=HexColor("#64748B"), spaceBefore=2, spaceAfter=8,
+    )
 
     doc = SimpleDocTemplate(
         path, pagesize=LETTER, topMargin=0.8 * inch, bottomMargin=0.8 * inch,
@@ -115,6 +228,7 @@ def _export_pdf(db, session, path) -> None:
     for i, turn in enumerate(turns, 1):
         story.append(Paragraph(f"Turn {i}", turn_style))
         story.append(Paragraph("<b>Prompt:</b> " + escape(turn.content or ""), prompt_style))
+        story.extend(_turn_attachment_flowables(turn, content_width, caption_style))
         for lane in lanes:
             msg = by_key.get((lane.id, turn.id))
             if not msg or not msg.content:
@@ -289,6 +403,10 @@ def export_message_pdf(
         "PromptText", parent=base, fontSize=9.5, leading=13.5,
         textColor=colors.HexColor("#1F2937"), spaceAfter=0,
     )
+    caption_style = ParagraphStyle(
+        "Caption", parent=base, fontSize=8, leading=11, alignment=1,
+        textColor=colors.HexColor("#64748B"), spaceBefore=2, spaceAfter=0,
+    )
 
     stored_name = new_stored_name("pdf")
     path = os.path.join(generated_dir(), stored_name)
@@ -318,14 +436,18 @@ def export_message_pdf(
         story.append(Paragraph(escape(pdf_safe(perf)), meta_style))
     story.append(Spacer(1, 12))
 
+    # The prompt card carries whatever the user actually sent — the text AND any images or
+    # documents attached to it, since those are as much a part of the question as the words.
+    prompt_parts: list = []
     if turn is not None and (turn.content or "").strip():
         prompt_text = escape(pdf_safe(turn.content.strip())).replace("\n", "<br/>")
+        prompt_parts.append(Paragraph(prompt_text, prompt_style))
+    # 10pt of cell padding either side, plus the accent bar.
+    prompt_parts.extend(_turn_attachment_flowables(turn, width - 30, caption_style))
+    if prompt_parts:
         story.append(
             _accent_card(
-                [
-                    Paragraph("PROMPT", label_style),
-                    Paragraph(prompt_text, prompt_style),
-                ],
+                [Paragraph("PROMPT", label_style), *prompt_parts],
                 width,
                 bg="#EEF2FF",
                 accent="#6366F1",
