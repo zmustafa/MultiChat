@@ -406,6 +406,9 @@ function DiagramModal({ svg, onClose }: { svg: string; onClose: () => void }) {
   const [scale, setScale] = useState(1);
   const [tx, setTx] = useState(0);
   const [ty, setTy] = useState(0);
+  // The fitted scale can only be computed once the viewport exists, so the first frame
+  // would otherwise paint the diagram at 100% and jump.
+  const [fitted, setFitted] = useState(false);
   const drag = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
 
@@ -468,7 +471,10 @@ function DiagramModal({ svg, onClose }: { svg: string; onClose: () => void }) {
 
   // Fit once the SVG has laid out, and again if the window is resized underneath it.
   useEffect(() => {
-    const raf = requestAnimationFrame(fit);
+    const raf = requestAnimationFrame(() => {
+      fit();
+      setFitted(true);
+    });
     window.addEventListener("resize", fit);
     return () => {
       cancelAnimationFrame(raf);
@@ -563,7 +569,9 @@ function DiagramModal({ svg, onClose }: { svg: string; onClose: () => void }) {
         style={{ cursor: drag.current ? "grabbing" : "grab" }}
       >
         <div
-          className="absolute left-1/2 top-1/2 rounded-lg bg-white p-4 shadow-2xl dark:bg-gray-900 [&_svg]:!h-full [&_svg]:!w-full [&_svg]:max-w-none"
+          className={`absolute left-1/2 top-1/2 rounded-lg bg-white p-4 shadow-2xl transition-opacity dark:bg-gray-900 [&_svg]:!h-full [&_svg]:!w-full [&_svg]:max-w-none ${
+            fitted ? "opacity-100" : "opacity-0"
+          }`}
           style={{
             width: dims.w,
             height: dims.h,
