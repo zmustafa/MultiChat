@@ -1,4 +1,5 @@
 import { apiFetch } from "./client";
+import { collectDiagrams } from "../utils/messagePdf";
 
 export interface PanelMember {
   provider_id: string;
@@ -161,10 +162,18 @@ export function continueInChat(runId: string, stepId?: string) {
 export type DeliberationFormat = "pdf" | "md" | "docx" | "json";
 
 /** Export the whole run. `json` is the audit trail: every step's input and verdict. */
-export function exportDeliberation(runId: string, fmt: DeliberationFormat = "pdf") {
+export async function exportDeliberation(
+  runId: string,
+  fmt: DeliberationFormat = "pdf",
+) {
+  // Mermaid can only be drawn by a browser, so hand over the diagrams already on screen.
+  const diagrams =
+    fmt === "pdf" || fmt === "docx"
+      ? await collectDiagrams(document.querySelector<HTMLElement>("[data-deliberation]"))
+      : [];
   return apiFetch<{ url: string; download_name: string }>(
     `/api/deliberations/${runId}/export?fmt=${fmt}`,
-    { method: "POST" },
+    { method: "POST", body: JSON.stringify({ diagrams }) },
   );
 }
 

@@ -977,6 +977,7 @@ export function DeliberationView({ runId }: { runId: string }) {
               el.scrollHeight - el.scrollTop - el.clientHeight < 60;
           }}
           className="min-h-0 flex-1 overflow-y-auto p-3"
+          data-deliberation
         >
           {/* Full width on purpose: panelists sit side by side, so every extra pixel buys
               a wider column per model, and the synthesis usually carries a comparison table. */}

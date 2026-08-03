@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
 from .config import settings
-from .models import Lane, LaneMessage, Provider, Session as ChatSession, Turn
+from .models import Lane, LaneMessage, Persona, Provider, Session as ChatSession, Turn
 from .tools.artifacts import generated_dir, new_stored_name, safe_download_name
 
 _MIME = {
@@ -15,6 +15,35 @@ _MIME = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "pdf": "application/pdf",
 }
+
+# Titles that say nothing about what a chat is about.
+_PLACEHOLDER_TITLES = {"", "new topic", "untitled", "comparison", "chat"}
+
+
+def _document_title(db: DbSession, session: ChatSession) -> str:
+    """What the exported document is about — its heading, metadata and filename.
+
+    A chat started from a persona carries that persona's name until the auto-titler
+    replaces it, and "New topic" is a placeholder. Neither describes the conversation, so
+    in those cases the first prompt stands in for the topic.
+    """
+    title = " ".join((session.title or "").split())
+    if title and title.lower() not in _PLACEHOLDER_TITLES:
+        is_persona_name = db.scalar(
+            select(Persona.id).where(
+                Persona.user_id == session.user_id, Persona.name == title
+            )
+        )
+        if not is_persona_name:
+            return title
+
+    first = min(session.turns, key=lambda t: t.order_index, default=None)
+    topic = " ".join((first.content or "").split()) if first is not None else ""
+    if topic:
+        if len(topic) > 70:
+            topic = topic[:70].rsplit(" ", 1)[0].rstrip(",;:.—-") + "\u2026"
+        return topic
+    return title or "Chat"
 
 # How tall a prompt attachment may print. Wide enough to read, short enough that a photo
 # doesn't push the answer onto the next page.
@@ -145,9 +174,9 @@ def _gather(db: DbSession, session: ChatSession):
     return lanes, turns, by_key, lane_label
 
 
-def _export_markdown(db, session, path) -> None:
+def _export_markdown(db, session, path, diagrams=None) -> None:
     lanes, turns, by_key, lane_label = _gather(db, session)
-    out: list[str] = [f"# {session.title or 'Comparison'}", ""]
+    out: list[str] = [f"# {_document_title(db, session)}", ""]
     for i, turn in enumerate(turns, 1):
         out.append(f"## Turn {i}")
         out.append("")
@@ -165,7 +194,7 @@ def _export_markdown(db, session, path) -> None:
         fh.write("\n".join(out))
 
 
-def _export_docx(db, session, path) -> None:
+def _export_docx(db, session, path, diagrams=None) -> None:
     from docx import Document
     from docx.shared import RGBColor
 
@@ -173,7 +202,7 @@ def _export_docx(db, session, path) -> None:
 
     lanes, turns, by_key, lane_label = _gather(db, session)
     doc = Document()
-    h = doc.add_heading(session.title or "Comparison", level=0)
+    h = doc.add_heading(_document_title(db, session), level=0)
     h.runs[0].font.color.rgb = RGBColor(0x1E, 0x1B, 0x4B)
     for i, turn in enumerate(turns, 1):
         doc.add_heading(f"Turn {i}", level=1)
@@ -188,11 +217,11 @@ def _export_docx(db, session, path) -> None:
                 continue
             hh = doc.add_heading(lane_label(lane), level=2)
             hh.runs[0].font.color.rgb = RGBColor(0x4F, 0x46, 0xE5)
-            render_markdown_docx(doc, msg.content, base_level=3)
+            render_markdown_docx(doc, msg.content, base_level=3, diagrams=diagrams)
     doc.save(path)
 
 
-def _export_pdf(db, session, path) -> None:
+def _export_pdf(db, session, path, diagrams=None) -> None:
     from reportlab.lib.colors import HexColor
     from reportlab.lib.pagesizes import LETTER
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -202,6 +231,7 @@ def _export_pdf(db, session, path) -> None:
     from .markdown_render import markdown_pdf_flowables
 
     lanes, turns, by_key, lane_label = _gather(db, session)
+    doc_title = _document_title(db, session)
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle("T", parent=styles["Title"], textColor=HexColor("#1E1B4B"))
     turn_style = ParagraphStyle(
@@ -221,10 +251,10 @@ def _export_pdf(db, session, path) -> None:
 
     doc = SimpleDocTemplate(
         path, pagesize=LETTER, topMargin=0.8 * inch, bottomMargin=0.8 * inch,
-        leftMargin=0.8 * inch, rightMargin=0.8 * inch, title=session.title or "Comparison",
+        leftMargin=0.8 * inch, rightMargin=0.8 * inch, title=doc_title,
     )
     content_width = doc.width
-    story: list = [Paragraph(escape(session.title or "Comparison"), title_style), Spacer(1, 8)]
+    story: list = [Paragraph(escape(doc_title), title_style), Spacer(1, 8)]
     for i, turn in enumerate(turns, 1):
         story.append(Paragraph(f"Turn {i}", turn_style))
         story.append(Paragraph("<b>Prompt:</b> " + escape(turn.content or ""), prompt_style))
@@ -234,15 +264,22 @@ def _export_pdf(db, session, path) -> None:
             if not msg or not msg.content:
                 continue
             story.append(Paragraph(escape(lane_label(lane)), lane_style))
-            story.extend(markdown_pdf_flowables(msg.content, body, content_width=content_width))
+            story.extend(
+                markdown_pdf_flowables(
+                    msg.content, body, diagrams=diagrams, content_width=content_width
+                )
+            )
     doc.build(story)
 
 
 _BUILDERS = {"md": _export_markdown, "docx": _export_docx, "pdf": _export_pdf}
 
 
-def export_session(db: DbSession, session: ChatSession, fmt: str):
+def export_session(db: DbSession, session: ChatSession, fmt: str, diagrams=None):
     """Export a whole session (all lanes side-by-side) to md/docx/pdf.
+
+    ``diagrams`` carries mermaid diagrams the chat UI already rasterized, so the document
+    shows the diagrams rather than their source.
 
     Returns (stored_name, download_name, mime_type).
     """
@@ -252,8 +289,10 @@ def export_session(db: DbSession, session: ChatSession, fmt: str):
         raise ValueError(f"Unsupported export format: {fmt}")
     stored_name = new_stored_name(fmt)
     path = os.path.join(generated_dir(), stored_name)
-    builder(db, session, path)
-    download_name = safe_download_name(session.title or "comparison", fmt, fallback="comparison")
+    builder(db, session, path, diagrams)
+    download_name = safe_download_name(
+        _document_title(db, session), fmt, fallback="comparison"
+    )
     return stored_name, download_name, _MIME.get(fmt, "application/octet-stream")
 
 
@@ -376,7 +415,7 @@ def export_message_pdf(
     provider = db.get(Provider, lane.provider_id) if lane and lane.provider_id else None
     model = (lane.model if lane else "") or "assistant"
     provider_name = provider.name if provider else "provider"
-    title = session.title or "Chat response"
+    title = _document_title(db, session)
 
     styles = getSampleStyleSheet()
     base = ParagraphStyle(
@@ -476,7 +515,7 @@ def export_message_pdf(
 # ---------------------------------------------------------------------------
 
 
-def export_deliberation_pdf(db: DbSession, run) -> tuple[str, str, str]:
+def export_deliberation_pdf(db: DbSession, run, diagrams=None) -> tuple[str, str, str]:
     """Export a deliberation as a US Letter PDF: rounds, objections, synthesis, dissent.
 
     The point of the document is the middle section. Anyone can get an answer from one
@@ -536,6 +575,10 @@ def export_deliberation_pdf(db: DbSession, run) -> tuple[str, str, str]:
         textColor=colors.HexColor("#9F1239"), spaceAfter=1,
     )
     small = ParagraphStyle("S", parent=base, fontSize=8.5, leading=11.5, spaceAfter=2)
+    caption = ParagraphStyle(
+        "Cap", parent=base, fontSize=8, leading=11, alignment=1,
+        textColor=colors.HexColor("#64748B"), spaceBefore=2, spaceAfter=0,
+    )
 
     stored_name = new_stored_name("pdf")
     path = os.path.join(generated_dir(), stored_name)
@@ -547,6 +590,9 @@ def export_deliberation_pdf(db: DbSession, run) -> tuple[str, str, str]:
     width = doc.width
 
     panel = [l for l in lanes.values() if l.role == "responder"]
+    # The panel was shown whatever the user attached to the question, so the record has to
+    # show it too — otherwise the objections reference an image the reader can't see.
+    turn = db.get(Turn, run.turn_id) if run.turn_id else None
     status_line = (
         f"{'converged' if run.converged else run.status.replace('_', ' ')} \u00b7 "
         f"{run.rounds_used} round(s) \u00b7 {run.total_calls} model calls \u00b7 "
@@ -561,7 +607,12 @@ def export_deliberation_pdf(db: DbSession, run) -> tuple[str, str, str]:
         ),
         Spacer(1, 12),
         _accent_card(
-            [Paragraph("QUESTION", label), Paragraph(escape(pdf_safe(run.prompt or "")), base)],
+            [
+                Paragraph("QUESTION", label),
+                Paragraph(escape(pdf_safe(run.prompt or "")), base),
+                # 10pt of cell padding either side, plus the accent bar.
+                *_turn_attachment_flowables(turn, width - 30, caption),
+            ],
             width, bg="#EEF2FF", accent="#6366F1",
         ),
         Spacer(1, 6),
@@ -613,7 +664,11 @@ def export_deliberation_pdf(db: DbSession, run) -> tuple[str, str, str]:
                 story.append(Paragraph(escape(pdf_safe("No objections raised.")), small))
             body = str(output.get("revised_answer") or output.get("answer") or "")
             if body and full_body:
-                story.extend(markdown_pdf_flowables(body, base, content_width=width))
+                story.extend(
+                    markdown_pdf_flowables(
+                        body, base, diagrams=diagrams, content_width=width
+                    )
+                )
         trace = traces.get(round_index)
         if trace:
             summary = (
@@ -635,7 +690,11 @@ def export_deliberation_pdf(db: DbSession, run) -> tuple[str, str, str]:
                        spaceBefore=14, spaceAfter=8)
         )
         story.append(Paragraph("SYNTHESIS", label))
-        story.extend(markdown_pdf_flowables(run.synthesis, base, content_width=width))
+        story.extend(
+            markdown_pdf_flowables(
+                run.synthesis, base, diagrams=diagrams, content_width=width
+            )
+        )
 
     if run.minority_report:
         story.append(Spacer(1, 8))
@@ -726,7 +785,7 @@ def _trace_summary(trace: dict) -> str:
     )
 
 
-def _export_deliberation_markdown(db: DbSession, run, path: str) -> str:
+def _export_deliberation_markdown(db: DbSession, run, path: str, diagrams=None) -> str:
     title, lanes, steps, traces = _deliberation_parts(db, run)
     panel = sorted(l.model for l in lanes.values() if l.role == "responder")
     out: list[str] = [
@@ -812,7 +871,7 @@ def _export_deliberation_markdown(db: DbSession, run, path: str) -> str:
     return title
 
 
-def _export_deliberation_docx(db: DbSession, run, path: str) -> str:
+def _export_deliberation_docx(db: DbSession, run, path: str, diagrams=None) -> str:
     from docx import Document
     from docx.shared import RGBColor
 
@@ -831,6 +890,7 @@ def _export_deliberation_docx(db: DbSession, run, path: str) -> str:
     doc.add_paragraph("Panel: " + ", ".join(panel))
     doc.add_heading("Question", level=1)
     doc.add_paragraph(run.prompt or "")
+    _add_turn_attachments_docx(doc, db.get(Turn, run.turn_id) if run.turn_id else None)
 
     rounds = sorted({s.round_index for s in steps if s.round_index < 90})
     last_round = rounds[-1] if rounds else 0
@@ -856,17 +916,17 @@ def _export_deliberation_docx(db: DbSession, run, path: str) -> str:
                 doc.add_paragraph("No objections raised.")
             body = str(output.get("revised_answer") or output.get("answer") or "")
             if body and full_body:
-                render_markdown_docx(doc, body, base_level=3)
+                render_markdown_docx(doc, body, base_level=3, diagrams=diagrams)
         trace = traces.get(round_index)
         if trace:
             doc.add_paragraph(_trace_summary(trace))
 
     if run.synthesis:
         doc.add_heading("Synthesis", level=1)
-        render_markdown_docx(doc, run.synthesis, base_level=2)
+        render_markdown_docx(doc, run.synthesis, base_level=2, diagrams=diagrams)
     if run.minority_report:
         doc.add_heading("Minority report — what the panel did not settle", level=1)
-        render_markdown_docx(doc, run.minority_report, base_level=2)
+        render_markdown_docx(doc, run.minority_report, base_level=2, diagrams=diagrams)
     extraction = run.extraction_json or {}
     for heading, key in (("Do now", "do_now"), ("Consider later", "consider_later"), ("Skip", "skip")):
         items = [str(i) for i in (extraction.get(key) or []) if str(i).strip()]
@@ -879,7 +939,7 @@ def _export_deliberation_docx(db: DbSession, run, path: str) -> str:
     return title
 
 
-def _export_deliberation_json(db: DbSession, run, path: str) -> str:
+def _export_deliberation_json(db: DbSession, run, path: str, diagrams=None) -> str:
     """The full audit trail: every step's input, output, verdict and timing.
 
     This is the export that has no equivalent in a normal chat — it is what makes a
@@ -945,19 +1005,22 @@ _DELIBERATION_BUILDERS = {
 _DELIBERATION_MIME = {**_MIME, "json": "application/json"}
 
 
-def export_deliberation(db: DbSession, run, fmt: str) -> tuple[str, str, str]:
+def export_deliberation(db: DbSession, run, fmt: str, diagrams=None) -> tuple[str, str, str]:
     """Export a deliberation as pdf/md/docx/json.
+
+    ``diagrams`` carries mermaid diagrams the UI already rasterized, so panel answers show
+    the diagram rather than its source.
 
     Returns (stored_name, download_name, mime_type).
     """
     fmt = (fmt or "pdf").lower()
     if fmt == "pdf":
-        return export_deliberation_pdf(db, run)
+        return export_deliberation_pdf(db, run, diagrams)
     builder = _DELIBERATION_BUILDERS.get(fmt)
     if not builder:
         raise ValueError(f"Unsupported export format: {fmt}")
     stored_name = new_stored_name(fmt)
     path = os.path.join(generated_dir(), stored_name)
-    title = builder(db, run, path)
+    title = builder(db, run, path, diagrams)
     download_name = safe_download_name(f"deliberation-{title}", fmt, fallback="deliberation")
     return stored_name, download_name, _DELIBERATION_MIME.get(fmt, "application/octet-stream")

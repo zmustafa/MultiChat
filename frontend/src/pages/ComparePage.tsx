@@ -27,6 +27,7 @@ import { useProviders } from "../hooks/useProviders";
 import { useTheme } from "../hooks/useTheme";
 import { seedLaneCollapse } from "../utils/laneCollapse";
 import { forgetLast, readLast, rememberLast } from "../utils/lastLocation";
+import { collectDiagrams } from "../utils/messagePdf";
 import { resolvePersonaLanes } from "../utils/personaLanes";
 import {
   useActiveSessions,
@@ -841,20 +842,29 @@ export function ComparePage() {
       });
   }
 
-  function exportComparison(fmt: "md" | "docx" | "pdf") {
+  async function exportComparison(fmt: "md" | "docx" | "pdf") {
     if (!activeId) return;
-    apiFetch<{ url: string; download_name: string }>(
-      `/api/sessions/${activeId}/export?fmt=${fmt}`,
-      { method: "POST" }
-    )
-      .then((res) => {
-        const a = document.createElement("a");
-        a.href = mediaUrl(res.url);
-        a.download = res.download_name;
-        a.click();
-        setShowFiles(true);
-      })
-      .catch((e) => alert((e as Error).message));
+    try {
+      // Mermaid can only be drawn by a browser, so the lanes hand over the diagrams they
+      // are already showing — otherwise the document gets the fence source instead.
+      const diagrams =
+        fmt === "md"
+          ? []
+          : await collectDiagrams(
+              document.querySelector<HTMLElement>("[data-compare-grid]"),
+            );
+      const res = await apiFetch<{ url: string; download_name: string }>(
+        `/api/sessions/${activeId}/export?fmt=${fmt}`,
+        { method: "POST", body: JSON.stringify({ diagrams }) },
+      );
+      const a = document.createElement("a");
+      a.href = mediaUrl(res.url);
+      a.download = res.download_name;
+      a.click();
+      setShowFiles(true);
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }
 
   async function continueInLane(laneId: string) {

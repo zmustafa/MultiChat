@@ -31,6 +31,7 @@ from ..models import (
     User,
 )
 from ..providers.registry import build_provider, pick_default_provider
+from ..schemas import MessageExportRequest
 from ..security import current_user
 from ..structured import extract_json
 
@@ -571,6 +572,7 @@ def continue_in_chat(
 def export_run(
     run_id: str,
     fmt: str = "pdf",
+    payload: MessageExportRequest | None = None,
     user: User = Depends(current_user),
     db: DbSession = Depends(get_db),
 ) -> dict:
@@ -582,13 +584,17 @@ def export_run(
 
     from ..export import export_deliberation
     from ..models import GeneratedFile
+    from .sessions import _decode_diagrams
 
     run = _get_run(db, user, run_id)
     fmt = (fmt or "pdf").lower()
     if fmt not in ("pdf", "md", "docx", "json"):
         raise HTTPException(status_code=400, detail=f"Unsupported export format: {fmt}")
     try:
-        stored_name, download_name, mime = export_deliberation(db, run, fmt)
+        # Mermaid needs a browser, so the panel view hands over the diagrams it rendered.
+        stored_name, download_name, mime = export_deliberation(
+            db, run, fmt, _decode_diagrams(payload)
+        )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=500,

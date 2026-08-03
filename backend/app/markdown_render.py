@@ -243,13 +243,47 @@ def _add_inline_docx(paragraph: Any, text: str) -> None:
             run.underline = True
 
 
-def render_markdown_docx(doc: Any, md: str, base_level: int = 2) -> None:
+def render_markdown_docx(
+    doc: Any,
+    md: str,
+    base_level: int = 2,
+    diagrams: Sequence[dict] | None = None,
+) -> None:
     """Append Markdown ``md`` to a python-docx ``doc`` as formatted elements.
 
     ``base_level`` is the docx heading level that a Markdown ``#`` maps to, so content
     headings nest below the surrounding section headings.
+
+    ``diagrams`` optionally supplies pre-rendered PNGs for ```mermaid``` fences (the chat UI
+    rasterizes what it is already showing). Without one, a fence falls back to its source
+    text — readable, but not a diagram.
     """
-    from docx.shared import Pt, RGBColor
+    import io
+
+    from docx.shared import Emu, Inches, Pt, RGBColor
+
+    pending = [dict(d) for d in (diagrams or [])]
+
+    def take_diagram(code: str) -> dict | None:
+        key = (code or "").strip()
+        for i, d in enumerate(pending):
+            if (d.get("code") or "").strip() == key:
+                return pending.pop(i)
+        return None
+
+    def place_diagram(data: bytes) -> bool:
+        try:
+            shape = doc.add_picture(io.BytesIO(data))
+        except Exception:  # noqa: BLE001 — fall back to the source text
+            return False
+        max_w, max_h = Inches(6.0), Inches(4.5)
+        if shape.width > max_w:
+            shape.height = Emu(int(shape.height * max_w / shape.width))
+            shape.width = max_w
+        if shape.height > max_h:
+            shape.width = Emu(int(shape.width * max_h / shape.height))
+            shape.height = max_h
+        return True
 
     for block in parse_blocks(md):
         kind = block[0]
@@ -266,6 +300,11 @@ def render_markdown_docx(doc: Any, md: str, base_level: int = 2) -> None:
             for it in block[1]:
                 _add_inline_docx(doc.add_paragraph(style="List Number"), it)
         elif kind == "code":
+            lang = block[2] if len(block) > 2 else ""
+            if lang == "mermaid":
+                d = take_diagram(block[1])
+                if d and d.get("data") and place_diagram(d["data"]):
+                    continue
             for cl in block[1].split("\n"):
                 p = doc.add_paragraph()
                 run = p.add_run(cl or " ")

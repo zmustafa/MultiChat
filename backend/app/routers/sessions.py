@@ -904,6 +904,7 @@ def broadcast(
 def export_comparison(
     session_id: str,
     fmt: str = "md",
+    payload: MessageExportRequest | None = None,
     user: User = Depends(current_user),
     db: DbSession = Depends(get_db),
 ) -> dict:
@@ -911,7 +912,11 @@ def export_comparison(
     if fmt not in ("md", "docx", "pdf"):
         raise HTTPException(status_code=400, detail="format must be md, docx or pdf")
     try:
-        stored_name, download_name, mime = build_export_file(db, s, fmt)
+        # The UI hands over the mermaid diagrams it has already rendered; without them a
+        # ```mermaid``` fence would land in the document as raw source.
+        stored_name, download_name, mime = build_export_file(
+            db, s, fmt, _decode_diagrams(payload)
+        )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Export failed: {exc}")
     path = os.path.join(settings.UPLOAD_DIR, "generated", stored_name)
