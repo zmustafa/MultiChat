@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type MermaidApi from "mermaid";
 
 // Lazy-load the (heavy) mermaid library on first diagram render so it doesn't bloat the
@@ -415,6 +416,24 @@ function DiagramModal({ svg, onClose }: { svg: string; onClose: () => void }) {
     return m ? { w: parseFloat(m[1]), h: parseFloat(m[2]) } : { w: 800, h: 600 };
   })();
 
+  // Keep the diagram on screen. Panning and zooming used to be unbounded, so a few wheel
+  // notches could park it entirely outside the viewport, leaving a blank white window with
+  // no clue that the content was simply somewhere else.
+  const clampPan = useCallback(
+    (nx: number, ny: number, s: number) => {
+      const vp = viewportRef.current;
+      if (!vp) return { x: nx, y: ny };
+      const keep = 80; // px of the diagram that must stay visible
+      const limX = Math.max(0, (dims.w + 32) * s * 0.5 + vp.clientWidth / 2 - keep);
+      const limY = Math.max(0, (dims.h + 32) * s * 0.5 + vp.clientHeight / 2 - keep);
+      return {
+        x: Math.max(-limX, Math.min(limX, nx)),
+        y: Math.max(-limY, Math.min(limY, ny)),
+      };
+    },
+    [dims.w, dims.h],
+  );
+
   // Scale the diagram to fill most of the viewport (mermaid diagrams render at their small
   // intrinsic size, so opening at 100% would look no bigger than the inline copy).
   const fit = useCallback(() => {
@@ -429,24 +448,49 @@ function DiagramModal({ svg, onClose }: { svg: string; onClose: () => void }) {
     setTy(0);
   }, [dims.w, dims.h]);
 
-  // Fit once the SVG has laid out.
+  /** Zoom about a point (the cursor), so whatever you're looking at stays under it. */
+  const zoomAt = useCallback(
+    (factor: number, clientX?: number, clientY?: number) => {
+      const vp = viewportRef.current;
+      setScale((s) => {
+        const next = Math.min(8, Math.max(0.2, s * factor));
+        const r = vp?.getBoundingClientRect();
+        const px = r && clientX !== undefined ? clientX - r.left - r.width / 2 : 0;
+        const py = r && clientY !== undefined ? clientY - r.top - r.height / 2 : 0;
+        const k = 1 - next / s;
+        setTx((x) => clampPan(x + (px - x) * k, 0, next).x);
+        setTy((y) => clampPan(0, y + (py - y) * k, next).y);
+        return next;
+      });
+    },
+    [clampPan],
+  );
+
+  // Fit once the SVG has laid out, and again if the window is resized underneath it.
   useEffect(() => {
     const raf = requestAnimationFrame(fit);
-    return () => cancelAnimationFrame(raf);
+    window.addEventListener("resize", fit);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", fit);
+    };
   }, [fit, svg]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
-      if (e.key === "+" || e.key === "=") setScale((s) => Math.min(8, s * 1.2));
-      if (e.key === "-") setScale((s) => Math.max(0.2, s / 1.2));
+      if (e.key === "+" || e.key === "=") zoomAt(1.2);
+      if (e.key === "-") zoomAt(1 / 1.2);
       if (e.key === "0") fit();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, fit]);
+  }, [onClose, fit, zoomAt]);
 
-  return (
+  // Rendered into <body>: a lane's transcript wraps older turns in `content-visibility`,
+  // which makes that turn the containing block for fixed-position children — the viewer
+  // would otherwise open trapped inside (and clipped by) the lane column.
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex flex-col bg-black/70 backdrop-blur-sm"
       onClick={onClose}
@@ -455,10 +499,15 @@ function DiagramModal({ svg, onClose }: { svg: string; onClose: () => void }) {
         className="flex items-center justify-between border-b border-white/10 px-3 py-2 text-white"
         onClick={(e) => e.stopPropagation()}
       >
-        <span className="text-sm font-medium">Diagram viewer</span>
+        <span className="flex items-baseline gap-2 text-sm font-medium">
+          Diagram viewer
+          <span className="text-[11px] font-normal text-white/50">
+            scroll to zoom · drag to pan · double-click to fit
+          </span>
+        </span>
         <div className="flex items-center gap-1 text-sm">
           <button
-            onClick={() => setScale((s) => Math.max(0.2, s / 1.2))}
+            onClick={() => zoomAt(1 / 1.2)}
             className="rounded px-2 py-0.5 hover:bg-white/10"
             title="Zoom out (-)"
           >
@@ -468,7 +517,7 @@ function DiagramModal({ svg, onClose }: { svg: string; onClose: () => void }) {
             {Math.round(scale * 100)}%
           </span>
           <button
-            onClick={() => setScale((s) => Math.min(8, s * 1.2))}
+            onClick={() => zoomAt(1.2)}
             className="rounded px-2 py-0.5 hover:bg-white/10"
             title="Zoom in (+)"
           >
@@ -494,17 +543,20 @@ function DiagramModal({ svg, onClose }: { svg: string; onClose: () => void }) {
         className="relative flex-1 overflow-hidden"
         ref={viewportRef}
         onClick={(e) => e.stopPropagation()}
-        onWheel={(e) => {
-          const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-          setScale((s) => Math.min(8, Math.max(0.2, s * factor)));
-        }}
+        onDoubleClick={fit}
+        onWheel={(e) => zoomAt(e.deltaY < 0 ? 1.1 : 1 / 1.1, e.clientX, e.clientY)}
         onMouseDown={(e) => {
           drag.current = { x: e.clientX, y: e.clientY, tx, ty };
         }}
         onMouseMove={(e) => {
           if (!drag.current) return;
-          setTx(drag.current.tx + (e.clientX - drag.current.x));
-          setTy(drag.current.ty + (e.clientY - drag.current.y));
+          const next = clampPan(
+            drag.current.tx + (e.clientX - drag.current.x),
+            drag.current.ty + (e.clientY - drag.current.y),
+            scale,
+          );
+          setTx(next.x);
+          setTy(next.y);
         }}
         onMouseUp={() => (drag.current = null)}
         onMouseLeave={() => (drag.current = null)}
@@ -521,6 +573,7 @@ function DiagramModal({ svg, onClose }: { svg: string; onClose: () => void }) {
           dangerouslySetInnerHTML={{ __html: svg }}
         />
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
