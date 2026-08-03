@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { Lane, LaneMessage, Provider, Turn } from "../api/types";
 import type { LiveMap } from "../hooks/useBroadcast";
 import type { QueuedMessage } from "./LaneComposer";
-import { LaneColumn } from "./LaneColumn";
+import { LaneColumn, RestoreIcon } from "./LaneColumn";
 
 interface Props {
   lanes: Lane[];
@@ -97,16 +97,7 @@ export function CompareGrid({
               {l.model}
             </button>
             <button
-              onClick={() => {
-                if (
-                  confirm(
-                    `Permanently close the "${l.model}" lane?\n\n` +
-                      "This removes the lane and all of its responses in this chat. " +
-                      "This cannot be undone."
-                  )
-                )
-                  onRemove(l.id);
-              }}
+              onClick={() => onRemove(l.id)}
               title={`Permanently close ${l.model}`}
               aria-label={`Permanently close ${l.model}`}
               className="rounded-r-full border-l border-gray-200 py-0.5 pl-1.5 pr-2 text-gray-400 transition hover:text-red-600 dark:border-gray-700 dark:hover:text-red-400"
@@ -183,6 +174,7 @@ export function CompareGrid({
         isMaximized={maximizedLaneId === lane.id}
         onToggleMaximize={() => toggleMaximize(lane.id)}
         onClose={() => onCloseLane(lane.id)}
+        isFirstLane={maximizedLaneId === lane.id || responders[0]?.id === lane.id}
         density={density}
         fitToScreen={fitToScreen}
         queued={queuedByLane?.[lane.id]}
@@ -203,10 +195,10 @@ export function CompareGrid({
           <div className="mb-2 flex flex-wrap items-center gap-1.5">
             <button
               onClick={() => setMaximizedLaneId(null)}
-              className="rounded border border-gray-300 bg-white px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
+              className="inline-flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
               title="Restore all lanes (Esc)"
             >
-              🗗 Restore
+              <RestoreIcon /> Restore
             </button>
             <span className="text-[10px] uppercase tracking-wide text-gray-400">
               Hidden:

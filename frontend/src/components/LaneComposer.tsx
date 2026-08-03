@@ -15,6 +15,8 @@ interface Props {
   autoFocusKey?: number | string;
   /** Optional control rendered inline in the send row (left of the target selector). */
   leftAccessory?: ReactNode;
+  /** Example prompts offered above the box while the topic has no turns yet. */
+  starters?: string[];
   onSend: (
     content: string,
     attachmentIds: string[],
@@ -38,6 +40,7 @@ export function LaneComposer({
   initialTextKey,
   autoFocusKey,
   leftAccessory,
+  starters,
   onSend,
 }: Props) {
   const [text, setText] = useState("");
@@ -92,8 +95,32 @@ export function LaneComposer({
     onEnqueue?.({ id: crypto.randomUUID(), ...p });
   }
 
+  const targetLane = responders.find((l) => l.id === target);
+  const placeholder = targetLane
+    ? `Message ${targetLane.model} only…`
+    : `Message all lanes…`;
+
   return (
     <div className="border-t border-gray-200 bg-white p-2 dark:border-gray-700 dark:bg-gray-900">
+      <div className="group w-full px-1">
+      {starters && starters.length > 0 && (
+        <div className="mb-2 flex items-center gap-1.5 overflow-x-auto pb-0.5">
+          <span className="shrink-0 text-[11px] font-medium text-gray-500 dark:text-gray-400">
+            Examples:
+          </span>
+          {starters.map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => setText(s)}
+              title="Put this prompt in the composer"
+              className="shrink-0 whitespace-nowrap rounded-full border border-gray-300 px-2.5 py-1 text-xs text-gray-600 transition hover:border-brand hover:text-brand dark:border-gray-600 dark:text-gray-300"
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="flex items-end gap-2">
         <PromptField
           value={text}
@@ -102,16 +129,21 @@ export function LaneComposer({
           attachments={attachments}
           onAttachmentsChange={setAttachments}
           focusKey={autoFocusKey}
-          placeholder="Type a prompt… (Enter to send, Shift+Enter for newline, paste an image)"
+          placeholder={placeholder}
+          ariaLabel={`Prompt — ${placeholder}`}
           disabled={disabled}
           footer={leftAccessory}
           trailing={
             <>
+        <label className="sr-only" htmlFor="composer-target">
+          Which lanes to send to
+        </label>
         <select
+          id="composer-target"
           value={target}
           onChange={(e) => setTarget(e.target.value)}
           title="Which lanes to send to"
-          className="rounded border border-gray-300 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800"
+          className="rounded border border-gray-300 px-2 py-1.5 text-sm dark:border-gray-600 dark:bg-gray-800"
         >
           <option value="all">Broadcast to all</option>
           {responders.map((l) => (
@@ -177,6 +209,10 @@ export function LaneComposer({
             </>
           }
         />
+      </div>
+      <div className="mt-1 px-1 text-[11px] text-gray-500 opacity-0 transition-opacity group-focus-within:opacity-100 dark:text-gray-400">
+        Enter to send · Shift+Enter for newline · paste or drop an image to attach
+      </div>
       </div>
     </div>
   );

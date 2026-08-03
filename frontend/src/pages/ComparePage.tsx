@@ -48,6 +48,19 @@ const ALL_TOOLS = [
   "generate_pdf",
 ];
 
+/** Offered under the composer while a topic has no turns yet, so an empty grid still
+ *  shows what this screen is for. Clicking one fills the box; you still press Send. */
+const STARTER_PROMPTS = [
+  "Explain the trade-offs of event-driven vs request/response architecture.",
+  "Review this design for security risks and rank them by severity.",
+  "Draft a one-page summary I can send to a non-technical stakeholder.",
+];
+
+/** A topic with a system prompt (one started from a persona, typically) leads with a
+ *  prompt that makes each lane introduce itself in that role. */
+const PERSONA_STARTER =
+  "Based on your instructions, what are you set up to help me with?";
+
 export function ComparePage() {
   const { logout, user } = useAuth();
   const qc = useQueryClient();
@@ -179,6 +192,21 @@ export function ComparePage() {
     localStorage.setItem("multichat_lane_widths", "{}");
   }, []);
 
+  // Widths are keyed by lane id in localStorage and outlive the lanes themselves. Drop the
+  // orphans, otherwise "Even widths" stays enabled for lanes that no longer exist.
+  useEffect(() => {
+    if (!session) return;
+    const ids = new Set(session.lanes.map((l) => l.id));
+    setLaneWidths((prev) => {
+      const next = Object.fromEntries(
+        Object.entries(prev).filter(([id]) => ids.has(id)),
+      );
+      if (Object.keys(next).length === Object.keys(prev).length) return prev;
+      localStorage.setItem("multichat_lane_widths", JSON.stringify(next));
+      return next;
+    });
+  }, [session]);
+
   useEffect(() => {
     if (activeId && session) {
       localStorage.setItem("multichat_active", activeId);
@@ -271,8 +299,18 @@ export function ComparePage() {
           const el = document.querySelector<HTMLInputElement>(
             `[data-lane-input="${lane.id}"]`,
           );
-          el?.scrollIntoView({ block: "nearest" });
-          el?.focus();
+          if (el) {
+            el.scrollIntoView({ block: "nearest" });
+            el.focus();
+          } else {
+            // The per-lane reply box is collapsed by default — open it, which
+            // autofocuses the input.
+            const toggle = document.querySelector<HTMLButtonElement>(
+              `[data-lane-reply-toggle="${lane.id}"]`,
+            );
+            toggle?.scrollIntoView({ block: "nearest" });
+            toggle?.click();
+          }
         }
         return;
       }
@@ -1033,15 +1071,21 @@ export function ComparePage() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex flex-wrap items-center gap-2 border-b border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
+          <label className="sr-only" htmlFor="topic-title">
+            Topic title
+          </label>
           <input
+            id="topic-title"
             value={session?.title || ""}
             disabled={!session}
             onChange={(e) =>
               activeId && sm.update.mutate({ id: activeId, body: { title: e.target.value } })
             }
             placeholder="Topic title"
-            className="rounded border border-gray-300 px-2 py-1 text-sm font-medium dark:border-gray-600 dark:bg-gray-800"
+            className="mr-1 rounded border border-gray-300 px-2 py-1 text-sm font-medium dark:border-gray-600 dark:bg-gray-800"
           />
+          {/* Group 1 — set the topic up: lanes, shared prompt, tools, judge. */}
+          <div className="flex flex-wrap items-center gap-1">
           <div className="relative" ref={addLaneRef}>
             <button
               disabled={!session}
@@ -1191,12 +1235,62 @@ export function ComparePage() {
             />
             Judge
           </label>
+          </div>
+
+          <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-gray-300 dark:bg-gray-600" />
+
+          {/* Group 2 — how the answers are laid out. Each button names the state it turns
+              ON and lights up while that state is active, so the bar reads consistently. */}
+          <div className="flex flex-wrap items-center gap-1">
           <button
             onClick={() => setShowDiff((d) => !d)}
-            className="rounded border border-gray-300 px-2 py-1 text-xs dark:border-gray-600"
+            title={showDiff ? "Back to the side-by-side grid" : "Compare answers as a diff"}
+            className={`rounded border px-2 py-1 text-xs ${
+              showDiff
+                ? "border-brand bg-brand/10 text-brand"
+                : "border-gray-300 dark:border-gray-600"
+            }`}
           >
-            {showDiff ? "Grid" : "Diff"}
+            ⇄ Diff
           </button>
+          <button
+            onClick={() => setFitToScreen((v) => !v)}
+            className={`rounded border px-2 py-1 text-xs ${
+              fitToScreen
+                ? "border-brand bg-brand/10 text-brand"
+                : "border-gray-300 dark:border-gray-600"
+            }`}
+            title="Fit all lanes to the screen width (no horizontal scroll)"
+          >
+            ⤢ Fit width
+          </button>
+          <button
+            onClick={() =>
+              setDensity((d) => (d === "compact" ? "comfortable" : "compact"))
+            }
+            className={`rounded border px-2 py-1 text-xs ${
+              density === "compact"
+                ? "border-brand bg-brand/10 text-brand"
+                : "border-gray-300 dark:border-gray-600"
+            }`}
+            title="Tighter spacing in every lane"
+          >
+            ▤ Compact
+          </button>
+          <button
+            onClick={resetLayout}
+            disabled={showDiff || Object.keys(laneWidths).length === 0}
+            className="rounded border border-gray-300 px-2 py-1 text-xs disabled:opacity-40 dark:border-gray-600"
+            title="Reset lane widths to a balanced layout"
+          >
+            ⇋ Even widths
+          </button>
+          </div>
+
+          <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-gray-300 dark:bg-gray-600" />
+
+          {/* Group 3 — act on the answers, then the side panels. */}
+          <div className="flex flex-wrap items-center gap-1">
           <button
             onClick={regenerateAll}
             disabled={
@@ -1212,10 +1306,14 @@ export function ComparePage() {
           </button>
           <button
             onClick={() => setShowArtifacts((a) => !a)}
-            className="rounded border border-gray-300 px-2 py-1 text-xs dark:border-gray-600"
+            className={`rounded border px-2 py-1 text-xs ${
+              showArtifacts
+                ? "border-brand bg-brand/10 text-brand"
+                : "border-gray-300 dark:border-gray-600"
+            }`}
             title="Artifacts panel"
           >
-            📌 Artifacts
+            🧩 Artifacts
           </button>
           <button
             onClick={() => setShowInsights((v) => !v)}
@@ -1252,35 +1350,10 @@ export function ComparePage() {
           >
             📌 Pins
           </button>
-          <button
-            onClick={() => setFitToScreen((v) => !v)}
-            className={`rounded border px-2 py-1 text-xs ${
-              fitToScreen
-                ? "border-brand bg-brand/10 text-brand"
-                : "border-gray-300 dark:border-gray-600"
-            }`}
-            title="Fit all lanes to the screen width (no horizontal scroll)"
-          >
-            ⤢ Fit
-          </button>
-          <button
-            onClick={() =>
-              setDensity((d) => (d === "compact" ? "comfortable" : "compact"))
-            }
-            className="rounded border border-gray-300 px-2 py-1 text-xs dark:border-gray-600"
-            title="Toggle compact / comfortable spacing"
-          >
-            {density === "compact" ? "▤ Compact" : "▥ Comfortable"}
-          </button>
-          {Object.keys(laneWidths).length > 0 && !showDiff && (
-            <button
-              onClick={resetLayout}
-              className="rounded border border-gray-300 px-2 py-1 text-xs dark:border-gray-600"
-              title="Reset lane widths to a balanced layout"
-            >
-              ⇋ Balance
-            </button>
-          )}
+          </div>
+
+          <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-gray-300 dark:bg-gray-600" />
+
           <div className="relative" ref={moreRef}>
             <button
               onClick={() => setMoreOpen((o) => !o)}
@@ -1446,9 +1519,18 @@ export function ComparePage() {
                 clearLane(laneId);
                 regenerate(laneId, latestTurn?.id);
               }}
-              onRemove={(laneId) =>
-                activeId && sm.removeLane.mutate({ id: activeId, laneId })
-              }
+              onRemove={(laneId) => {
+                if (!activeId) return;
+                const lane = session.lanes.find((l) => l.id === laneId);
+                if (
+                  confirm(
+                    `Remove the "${lane?.model ?? "selected"}" lane from this topic?\n\n` +
+                      "Its answers go with it. To just get it out of the way, use ✕ in the " +
+                      "lane header instead — that keeps it restorable.",
+                  )
+                )
+                  sm.removeLane.mutate({ id: activeId, laneId });
+              }}
               onPickBest={setBest}
               onContinue={continueInLane}
               onBranchTurn={branchFrom}
@@ -1546,6 +1628,13 @@ export function ComparePage() {
             initialText={editDraft?.text}
             initialTextKey={editDraft?.ts}
             autoFocusKey={activeId ?? undefined}
+            starters={
+              session.turns.length === 0
+                ? session.system_prompt?.trim()
+                  ? [PERSONA_STARTER, ...STARTER_PROMPTS.slice(0, 2)]
+                  : STARTER_PROMPTS
+                : undefined
+            }
             leftAccessory={
               navRowCount > 1 ? (
                 <div className="flex items-center gap-1">

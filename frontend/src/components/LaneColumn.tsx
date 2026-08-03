@@ -38,6 +38,8 @@ interface Props {
   isMaximized?: boolean;
   onToggleMaximize?: () => void;
   onClose?: () => void;
+  /** Only the leftmost lane spells out the empty-state hint, so it isn't repeated N times. */
+  isFirstLane?: boolean;
   density?: "comfortable" | "compact";
   fitToScreen?: boolean;
   queued?: QueuedMessage[];
@@ -78,6 +80,30 @@ function DownloadIcon() {
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
       <path d="M7 10l5 5 5-5" />
       <path d="M12 15V3" />
+    </svg>
+  );
+}
+
+/* The maximize/restore glyphs used to be 🗖 / 🗗, which render as tofu boxes in the
+   default Windows UI font stack. Draw them instead. */
+function MaximizeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M15 3h6v6" />
+      <path d="M21 3l-7 7" />
+      <path d="M9 21H3v-6" />
+      <path d="M3 21l7-7" />
+    </svg>
+  );
+}
+
+export function RestoreIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M14 10h6V4" />
+      <path d="M14 10l7-7" />
+      <path d="M10 14H4v6" />
+      <path d="M10 14l-7 7" />
     </svg>
   );
 }
@@ -550,6 +576,7 @@ export function LaneColumn({
   isMaximized,
   onToggleMaximize,
   onClose,
+  isFirstLane,
   density = "comfortable",
   fitToScreen,
   queued,
@@ -559,6 +586,9 @@ export function LaneColumn({
   const [collapsed, setCollapsed] = useState(() => isLaneCollapsed(lane.id));
   const [editingModel, setEditingModel] = useState(false);
   const [laneDraft, setLaneDraft] = useState("");
+  // The per-lane reply box stays collapsed until asked for, so the shared composer at the
+  // bottom of the page is unambiguously the primary input.
+  const [replyOpen, setReplyOpen] = useState(false);
   // Drives the per-lane "collapse/expand all code" control; consumed by every CodeBlock.
   const [codeFold, setCodeFold] = useState({ signal: 0, collapsed: false });
   const rootRef = useRef<HTMLDivElement>(null);
@@ -618,6 +648,10 @@ export function LaneColumn({
         ),
     [turns, lane.id],
   );
+  // Lane actions that operate on an existing answer stay disabled until there is one.
+  const hasTurns = orderedTurns.length > 0;
+  // Nothing has happened in this lane yet — show a centered placeholder instead of a void.
+  const isEmpty = !hasTurns && !live;
 
   // When a (re)generation starts we snapshot the turn's currently-persisted answer. This
   // lets us tell, once the lane finishes, whether the refetched message already reflects
@@ -747,7 +781,8 @@ export function LaneColumn({
           <button
             onClick={() => toggleCollapsed(false)}
             title="Expand"
-            className="text-xs text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+            aria-label={`Expand the ${lane.model} lane`}
+            className="inline-flex h-6 w-6 items-center justify-center rounded text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
           >
             ▸
           </button>
@@ -767,7 +802,8 @@ export function LaneColumn({
           <button
             onClick={onClose ?? onRemove}
             title="Close lane"
-            className="text-xs text-gray-400 hover:text-red-500"
+            aria-label={`Hide the ${lane.model} lane`}
+            className="inline-flex h-6 w-6 items-center justify-center rounded text-xs text-gray-500 hover:text-red-500 dark:text-gray-400"
           >
             ✕
           </button>
@@ -797,7 +833,8 @@ export function LaneColumn({
                   <button
                     onClick={() => setEditingModel(true)}
                     title="Change model"
-                    className="shrink-0 text-xs text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                    aria-label={`Change model for the ${lane.model} lane`}
+                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-xs text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
                   >
                     ✎
                   </button>
@@ -819,7 +856,12 @@ export function LaneColumn({
                       ? "Expand all code blocks"
                       : "Collapse all code blocks"
                   }
-                  className="rounded px-1 text-xs text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                  aria-label={
+                    codeFold.collapsed
+                      ? "Expand all code blocks"
+                      : "Collapse all code blocks"
+                  }
+                  className="inline-flex h-6 items-center justify-center rounded px-1 text-xs text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
                 >
                   {codeFold.collapsed ? "▸</>" : "▾</>"}
                 </button>
@@ -828,23 +870,34 @@ export function LaneColumn({
               {onToggleMaximize && !collapsed && (
                 <button
                   onClick={onToggleMaximize}
-                  className="rounded px-1 text-xs text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                  className="inline-flex h-6 w-6 items-center justify-center rounded text-xs text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
                   title={isMaximized ? "Restore" : "Maximize"}
+                  aria-label={
+                    isMaximized
+                      ? `Restore the ${lane.model} lane`
+                      : `Maximize the ${lane.model} lane`
+                  }
                 >
-                  {isMaximized ? "🗗" : "🗖"}
+                  {isMaximized ? <RestoreIcon /> : <MaximizeIcon />}
                 </button>
               )}
               <button
                 onClick={() => toggleCollapsed()}
-                className="rounded px-1 text-xs text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                className="inline-flex h-6 w-6 items-center justify-center rounded text-xs text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
                 title={collapsed ? "Expand" : "Collapse"}
+                aria-label={
+                  collapsed
+                    ? `Expand the ${lane.model} lane`
+                    : `Collapse the ${lane.model} lane`
+                }
               >
                 {collapsed ? "▸" : "▾"}
               </button>
               <button
                 onClick={onClose ?? onRemove}
-                className="rounded px-1 text-xs text-gray-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950"
-                title="Close lane (restore later)"
+                className="ml-1 inline-flex h-6 w-6 items-center justify-center rounded border-l border-gray-200 pl-1 text-xs text-gray-500 hover:bg-red-50 hover:text-red-500 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-red-950"
+                title="Hide this lane — reopen it from the Closed bar"
+                aria-label={`Hide the ${lane.model} lane`}
               >
                 ✕
               </button>
@@ -861,14 +914,37 @@ export function LaneColumn({
             onScroll={handleScroll}
             data-lane-scroll
             className={`min-h-0 flex-1 overflow-y-auto ${
-              density === "compact" ? "p-1.5 text-[13px]" : "p-2"
-            }`}
+              isEmpty ? "flex flex-col" : ""
+            } ${density === "compact" ? "p-1.5 text-[13px]" : "p-2"}`}
           >
             <CodeFoldContext.Provider value={codeFold}>
             <div
               ref={contentRef}
-              className={density === "compact" ? "space-y-1.5" : "space-y-3"}
+              className={
+                isEmpty
+                  ? "flex flex-1 items-center justify-center"
+                  : density === "compact"
+                    ? "space-y-1.5"
+                    : "space-y-3"
+              }
             >
+            {isEmpty && (
+              <div className="flex flex-col items-center gap-1 px-3 text-center">
+                <span className="text-sm font-medium text-gray-500 dark:text-gray-400">
+                  {lane.model}
+                </span>
+                <span className="text-xs text-gray-500 dark:text-gray-400">
+                  {providerName}
+                </span>
+                {isFirstLane && (
+                  <span className="mt-1 max-w-[15rem] text-xs text-gray-500 dark:text-gray-400">
+                    {lane.role === "judge"
+                      ? "Scores appear here once the lanes answer."
+                      : "Answers stream in here once you send a prompt."}
+                  </span>
+                )}
+              </div>
+            )}
             {orderedTurns.map((turn, turnIdx) => {
               const m = byTurn.get(turn.id);
               // Skip rendering/layout for off-screen turns of long transcripts. The browser
@@ -1164,6 +1240,8 @@ export function LaneColumn({
           )}
 
           <div className="flex flex-wrap items-center gap-1 border-t border-gray-200 px-2 py-1 dark:border-gray-700">
+            {/* An untouched lane only offers the one action that makes sense: talk to it.
+                Everything else operates on an answer that doesn't exist yet. */}
             {status === "streaming" ? (
               <button
                 onClick={onStop}
@@ -1172,49 +1250,83 @@ export function LaneColumn({
                 Stop
               </button>
             ) : (
-              <button
-                onClick={onRegenerate}
-                disabled={status === "queued"}
-                className="rounded bg-gray-100 px-2 py-0.5 text-xs disabled:opacity-40 dark:bg-gray-800"
-              >
-                {status === "error" ? "Retry" : "Regenerate"}
-              </button>
+              hasTurns && (
+                <button
+                  onClick={onRegenerate}
+                  disabled={status === "queued"}
+                  title="Regenerate the latest response in this lane"
+                  className="rounded bg-gray-100 px-2 py-0.5 text-xs disabled:cursor-not-allowed disabled:opacity-40 dark:bg-gray-800"
+                >
+                  {status === "error" ? "Retry" : "Regenerate"}
+                </button>
+              )
             )}
-            <button
-              onClick={onPickBest}
-              className="rounded bg-gray-100 px-2 py-0.5 text-xs dark:bg-gray-800"
-            >
-              {isBest ? "Unstar" : "Best"}
-            </button>
-            {onContinue && (
+            {hasTurns && (
+              <>
+                <button
+                  onClick={onPickBest}
+                  title="Mark this lane's answer as the best one"
+                  className="rounded bg-gray-100 px-2 py-0.5 text-xs dark:bg-gray-800"
+                >
+                  {isBest ? "Unstar" : "Best"}
+                </button>
+                {onContinue && (
+                  <button
+                    onClick={onContinue}
+                    title="Continue this model in a focused new chat"
+                    className="rounded bg-gray-100 px-2 py-0.5 text-xs dark:bg-gray-800"
+                  >
+                    → Continue
+                  </button>
+                )}
+              </>
+            )}
+            {lane.role === "responder" && onSendToLane && (
               <button
-                onClick={onContinue}
-                title="Continue this model in a focused new chat"
-                className="rounded bg-gray-100 px-2 py-0.5 text-xs dark:bg-gray-800"
+                onClick={() => setReplyOpen((o) => !o)}
+                data-lane-reply-toggle={lane.id}
+                aria-expanded={replyOpen}
+                title={`Send a message to ${lane.model} only`}
+                className={`rounded px-2 py-0.5 text-xs ${
+                  replyOpen
+                    ? "bg-brand/10 text-brand"
+                    : "bg-gray-100 dark:bg-gray-800"
+                }`}
               >
-                → Continue
+                {replyOpen ? "▾ Reply" : "↩ Reply"}
               </button>
             )}
             <button
               onClick={onRemove}
-              className="ml-auto rounded px-2 py-0.5 text-xs text-gray-400 hover:text-red-500"
+              title={`Remove ${lane.model} from this topic — deletes its answers. Use ✕ in the header to just hide it.`}
+              className="ml-auto rounded px-2 py-0.5 text-xs text-gray-500 hover:text-red-500 dark:text-gray-400"
             >
               Remove
             </button>
           </div>
 
-          {lane.role === "responder" && onSendToLane && (() => {
+          {replyOpen && lane.role === "responder" && onSendToLane && (() => {
             const laneBusy =
               status === "streaming" ||
               status === "queued" ||
               status === "thinking";
             return (
             <div className="flex items-center gap-1 border-t border-gray-200 px-2 py-1 dark:border-gray-700">
+              <label className="sr-only" htmlFor={`lane-reply-${lane.id}`}>
+                {`Message ${lane.model} only`}
+              </label>
               <input
+                id={`lane-reply-${lane.id}`}
+                autoFocus
                 value={laneDraft}
                 data-lane-input={lane.id}
                 onChange={(e) => setLaneDraft(e.target.value)}
                 onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setReplyOpen(false);
+                    return;
+                  }
                   if (e.key === "Enter" && !e.shiftKey && !laneBusy) {
                     e.preventDefault();
                     sendLaneDraft();

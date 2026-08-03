@@ -223,7 +223,7 @@ function PersonaEditor({
                         : "text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
                     }
                   >
-                    {l.collapsed ? "🗕" : "🗖"}
+                    {l.collapsed ? "▸" : "▾"}
                   </button>
                   <button
                     onClick={() => setLanes((prev) => prev.filter((_, j) => j !== i))}
@@ -241,7 +241,7 @@ function PersonaEditor({
             </div>
             {lanes.length > 0 && (
               <p className="mb-2 text-[10px] text-gray-400">
-                ◀ ▶ reorder how lanes appear · 🗕 lane starts minimized when the chat
+                ◀ ▶ reorder how lanes appear · ▸ lane starts minimized when the chat
                 launches (expand it anytime)
               </p>
             )}

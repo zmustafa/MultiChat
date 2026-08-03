@@ -197,6 +197,7 @@ export function PromptField({
   attachments,
   onAttachmentsChange,
   placeholder,
+  ariaLabel,
   submitOn = "enter",
   autoFocus,
   focusKey,
@@ -212,6 +213,8 @@ export function PromptField({
   attachments: Attachment[];
   onAttachmentsChange: (next: Attachment[]) => void;
   placeholder?: string;
+  /** Accessible name for the textarea when the placeholder alone isn't descriptive. */
+  ariaLabel?: string;
   /** "enter" sends on Enter; "mod-enter" needs Ctrl/Cmd (for long-form question boxes). */
   submitOn?: "enter" | "mod-enter";
   autoFocus?: boolean;
@@ -283,7 +286,7 @@ export function PromptField({
   }
 
   return (
-    <div className="flex flex-col">
+    <div className="flex min-w-0 flex-1 flex-col">
       <div className="flex items-end gap-2">
         <div
           onDragOver={(e) => {
@@ -345,6 +348,7 @@ export function PromptField({
             disabled={disabled}
             rows={minRows}
             placeholder={placeholder}
+            aria-label={ariaLabel ?? placeholder ?? "Prompt"}
             onChange={(e) => onChange(e.target.value)}
             onPaste={(e) => {
               const files = filesFromClipboard(e);
