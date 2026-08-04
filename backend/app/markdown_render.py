@@ -25,7 +25,7 @@ from xml.sax.saxutils import escape
 #   ("p", text:str)
 #   ("ul", items:list[str])       ("ol", items:list[str], start:int)
 #   ("code", text:str, lang:str)
-#   ("quote", text:str)
+#   ("quote", blocks:list[Block])
 #   ("hr",)
 #   ("table", cols:list[str], rows:list[list[str]])
 #   ("image", alt:str, src:str)
@@ -124,10 +124,22 @@ def parse_blocks(md: str) -> list[Block]:
 
         if stripped.startswith(">"):
             quote_lines: list[str] = []
-            while i < n and lines[i].strip().startswith(">"):
-                quote_lines.append(re.sub(r"^\s*>\s?", "", lines[i]))
-                i += 1
-            blocks.append(("quote", "\n".join(quote_lines).strip()))
+            while i < n:
+                cur = lines[i]
+                if cur.strip().startswith(">"):
+                    quote_lines.append(re.sub(r"^\s*>\s?", "", cur))
+                    i += 1
+                    continue
+                # Lazy continuation: an unmarked line that is not itself a new block still
+                # belongs to the paragraph the quote was in the middle of.
+                if cur.strip() and not _is_block_start(cur):
+                    quote_lines.append(cur.strip())
+                    i += 1
+                    continue
+                break
+            # A quote is a container, not a string: its headings, lists, tables and code
+            # fences are real blocks and must render as such.
+            blocks.append(("quote", parse_blocks("\n".join(quote_lines))))
             continue
 
         # Pipe table: a header row followed by a |---|---| separator row
@@ -260,7 +272,7 @@ def render_markdown_docx(
     """
     import io
 
-    from docx.shared import Emu, Inches, Pt, RGBColor
+    from docx.shared import Emu, Inches
 
     pending = [dict(d) for d in (diagrams or [])]
 
@@ -285,20 +297,43 @@ def render_markdown_docx(
             shape.height = max_h
         return True
 
-    for block in parse_blocks(md):
+    _render_blocks_docx(
+        doc, parse_blocks(md), base_level, take_diagram, place_diagram
+    )
+
+
+def _render_blocks_docx(
+    doc: Any,
+    blocks: Sequence[Block],
+    base_level: int,
+    take_diagram: Callable[[str], dict | None],
+    place_diagram: Callable[[bytes], bool],
+    indent: float = 0.0,
+) -> None:
+    from docx.shared import Inches, Pt, RGBColor
+
+    def para(style: str | None = None):
+        p = doc.add_paragraph(style=style) if style else doc.add_paragraph()
+        if indent:
+            p.paragraph_format.left_indent = Inches(indent)
+        return p
+
+    for block in blocks:
         kind = block[0]
         if kind == "h":
             level = min(base_level + block[1] - 1, 9)
             hp = doc.add_heading("", level=level)
+            if indent:
+                hp.paragraph_format.left_indent = Inches(indent)
             _add_inline_docx(hp, block[2])
         elif kind == "p":
-            _add_inline_docx(doc.add_paragraph(), block[1])
+            _add_inline_docx(para(), block[1])
         elif kind == "ul":
             for it in block[1]:
-                _add_inline_docx(doc.add_paragraph(style="List Bullet"), it)
+                _add_inline_docx(para("List Bullet"), it)
         elif kind == "ol":
             for it in block[1]:
-                _add_inline_docx(doc.add_paragraph(style="List Number"), it)
+                _add_inline_docx(para("List Number"), it)
         elif kind == "code":
             lang = block[2] if len(block) > 2 else ""
             if lang == "mermaid":
@@ -306,19 +341,18 @@ def render_markdown_docx(
                 if d and d.get("data") and place_diagram(d["data"]):
                     continue
             for cl in block[1].split("\n"):
-                p = doc.add_paragraph()
+                p = para()
                 run = p.add_run(cl or " ")
                 run.font.name = "Consolas"
                 run.font.size = Pt(9)
                 run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
         elif kind == "quote":
-            try:
-                p = doc.add_paragraph(style="Quote")
-            except Exception:  # noqa: BLE001 — style not in template
-                p = doc.add_paragraph()
-            _add_inline_docx(p, block[1])
+            # Quoted content keeps its own block structure; the quote only adds an indent.
+            _render_blocks_docx(
+                doc, block[1], base_level, take_diagram, place_diagram, indent + 0.3
+            )
         elif kind == "hr":
-            doc.add_paragraph("─" * 30)
+            para().add_run("─" * 30)
         elif kind == "table":
             cols, rows = block[1], block[2]
             if not cols:
@@ -829,15 +863,13 @@ def markdown_pdf_flowables(
     )
     quote_style = ParagraphStyle(
         "MdQuote", parent=body_style, leftIndent=14, textColor=colors.HexColor("#475569"),
-        fontName=fonts["italic"], borderPadding=4, spaceBefore=4, spaceAfter=6,
+        borderPadding=4, spaceBefore=4, spaceAfter=6,
     )
     caption_style = ParagraphStyle(
         "MdCaption", parent=body_style, fontSize=8, leading=10, alignment=1,
         textColor=colors.HexColor("#64748B"), spaceBefore=2, spaceAfter=8,
     )
     list_style = ParagraphStyle("MdListItem", parent=body_style, spaceAfter=2)
-    # Courier and DejaVu Sans Mono are both 0.6em wide, so this is an exact column count.
-    max_code_chars = int((content_width - 2 * code_pad_x) / (code_font_size * 0.602))
 
     pending = [dict(d) for d in (diagrams or [])]
 
@@ -848,112 +880,152 @@ def markdown_pdf_flowables(
                 return pending.pop(i)
         return None
 
-    def code_flowable(text: str, lang: str):
-        spans = _wrap_code_spans(_code_spans(text.replace("\t", "    "), lang), max_code_chars)
-        return XPreformatted(_code_markup(spans) or " ", code_style)
+    def code_flowable(text: str, lang: str, style, chars: int):
+        """``chars`` is the exact column count: DejaVu Sans Mono and Courier are 0.6em."""
+        spans = _wrap_code_spans(_code_spans(text.replace("\t", "    "), lang), chars)
+        return XPreformatted(_code_markup(spans) or " ", style)
 
-    flow: list = []
-    for block in parse_blocks(md):
-        kind = block[0]
-        if kind == "h":
-            size = max(15 - (block[1] - 1) * 1.6, 10.0)
-            hs = ParagraphStyle(
-                f"MdH{block[1]}", parent=heading_style, fontSize=size, leading=size + 4
-            )
-            flow.append(Paragraph(_inline_pdf(block[2]), hs))
-        elif kind == "p":
-            flow.append(Paragraph(_inline_pdf(block[1]), body_style))
-        elif kind in ("ul", "ol"):
-            items = [ListItem(Paragraph(_inline_pdf(it), list_style)) for it in block[1]]
-            ordered = kind == "ol"
-            flow.append(
-                ListFlowable(
-                    items,
-                    bulletType="1" if ordered else "bullet",
-                    start=(block[2] if len(block) > 2 else 1) if ordered else None,
-                    bulletFormat="%s." if ordered else None,
-                    leftIndent=18,
-                    bulletDedent=12,
-                    bulletFontName=fonts["body"],
-                    bulletFontSize=body_style.fontSize,
-                    spaceBefore=2,
-                    spaceAfter=6,
+    # A quote shifts its children right; nothing else about them changes, so the whole
+    # renderer is re-entered with a larger indent rather than flattened into one string.
+    quote_indent = 16.0
+
+    def render(blocks: Sequence[Block], indent: float = 0.0, quoted: bool = False) -> list:
+        avail = content_width - indent
+        tag = f"{int(indent)}{'q' if quoted else ''}"
+        b_style = ParagraphStyle(
+            f"MdBody{tag}", parent=body_style, leftIndent=body_style.leftIndent + indent
+        )
+        h_style = ParagraphStyle(
+            f"MdHead{tag}", parent=heading_style,
+            leftIndent=heading_style.leftIndent + indent,
+        )
+        i_style = ParagraphStyle(f"MdItem{tag}", parent=list_style)
+        c_style = ParagraphStyle(f"MdCodeI{tag}", parent=code_style, leftIndent=indent)
+        cap_style = ParagraphStyle(
+            f"MdCap{tag}", parent=caption_style, leftIndent=caption_style.leftIndent + indent
+        )
+        if quoted:
+            b_style.textColor = quote_style.textColor
+            i_style.textColor = quote_style.textColor
+        chars = max(20, int((avail - 2 * code_pad_x) / (code_font_size * 0.602)))
+
+        flow: list = []
+        for block in blocks:
+            kind = block[0]
+            if kind == "h":
+                size = max(15 - (block[1] - 1) * 1.6, 10.0)
+                hs = ParagraphStyle(
+                    f"MdH{block[1]}{tag}", parent=h_style, fontSize=size, leading=size + 4
                 )
-            )
-        elif kind == "code":
-            text, lang = block[1], (block[2] if len(block) > 2 else "")
-            if lang == "mermaid":
-                d = take_diagram(text)
-                card = (
-                    _diagram_card(
-                        d["data"], content_width, 8.0 * 72,
-                        natural_pt=float(d.get("width") or 0) * 0.75,
+                flow.append(Paragraph(_inline_pdf(block[2]), hs))
+            elif kind == "p":
+                flow.append(Paragraph(_inline_pdf(block[1]), b_style))
+            elif kind in ("ul", "ol"):
+                items = [ListItem(Paragraph(_inline_pdf(it), i_style)) for it in block[1]]
+                ordered = kind == "ol"
+                flow.append(
+                    ListFlowable(
+                        items,
+                        bulletType="1" if ordered else "bullet",
+                        start=(block[2] if len(block) > 2 else 1) if ordered else None,
+                        bulletFormat="%s." if ordered else None,
+                        leftIndent=18 + indent,
+                        bulletDedent=12,
+                        bulletFontName=fonts["body"],
+                        bulletFontSize=body_style.fontSize,
+                        bulletColor=i_style.textColor,
+                        spaceBefore=2,
+                        spaceAfter=6,
                     )
-                    if d and d.get("data")
-                    else None
                 )
-                if card is not None:
+            elif kind == "code":
+                text, lang = block[1], (block[2] if len(block) > 2 else "")
+                if lang == "mermaid":
+                    d = take_diagram(text)
+                    card = (
+                        _diagram_card(
+                            d["data"], avail, 8.0 * 72,
+                            natural_pt=float(d.get("width") or 0) * 0.75,
+                        )
+                        if d and d.get("data")
+                        else None
+                    )
+                    if card is not None:
+                        flow.append(card)
+                        continue
+                flow.append(code_flowable(text or " ", lang, c_style, chars))
+            elif kind == "image":
+                data = resolve_image_bytes(block[2])
+                card = _diagram_card(data, avail, 7.0 * 72) if data else None
+                if card is None:
+                    flow.append(
+                        Paragraph(_inline_pdf(f"[{block[1] or 'image'}]({block[2]})"), b_style)
+                    )
+                elif block[1]:
+                    flow.append(
+                        KeepTogether(
+                            [card, Paragraph(escape(pdf_safe(block[1])), cap_style)]
+                        )
+                    )
+                else:
                     flow.append(card)
+            elif kind == "quote":
+                flow.append(Spacer(1, 4))
+                flow.extend(render(block[1], indent + quote_indent, quoted=True))
+                flow.append(Spacer(1, 4))
+            elif kind == "hr":
+                flow.append(
+                    HRFlowable(width=avail, thickness=0.6, color=colors.HexColor("#CBD5E1"),
+                               spaceBefore=6, spaceAfter=6, hAlign="LEFT")
+                )
+            elif kind == "table":
+                cols, rows = block[1], block[2]
+                if not cols:
                     continue
-            flow.append(code_flowable(text or " ", lang))
-        elif kind == "image":
-            data = resolve_image_bytes(block[2])
-            card = _diagram_card(data, content_width, 7.0 * 72) if data else None
-            if card is None:
-                flow.append(
-                    Paragraph(_inline_pdf(f"[{block[1] or 'image'}]({block[2]})"), body_style)
+                cell_style = ParagraphStyle(
+                    "MdCell", parent=body_style, fontSize=8.5, leading=11, spaceAfter=0
                 )
-            elif block[1]:
-                flow.append(
-                    KeepTogether([card, Paragraph(escape(pdf_safe(block[1])), caption_style)])
+                head_style = ParagraphStyle(
+                    "MdCellHead", parent=cell_style, fontName=fonts["bold"],
+                    textColor=colors.HexColor("#1E1B4B"),
                 )
-            else:
-                flow.append(card)
-        elif kind == "quote":
-            flow.append(Paragraph(_inline_pdf(block[1]), quote_style))
-        elif kind == "hr":
-            flow.append(
-                HRFlowable(width="100%", thickness=0.6, color=colors.HexColor("#CBD5E1"),
-                           spaceBefore=6, spaceAfter=6)
-            )
-        elif kind == "table":
-            cols, rows = block[1], block[2]
-            if not cols:
-                continue
-            cell_style = ParagraphStyle(
-                "MdCell", parent=body_style, fontSize=8.5, leading=11, spaceAfter=0
-            )
-            head_style = ParagraphStyle(
-                "MdCellHead", parent=cell_style, fontName=fonts["bold"],
-                textColor=colors.HexColor("#1E1B4B"),
-            )
-            data = [[Paragraph(_inline_pdf(str(c)), head_style) for c in cols]]
-            for r in rows:
-                data.append(
-                    [
-                        Paragraph(_inline_pdf(str(r[c_i])) if c_i < len(r) else "", cell_style)
-                        for c_i in range(len(cols))
-                    ]
+                data = [[Paragraph(_inline_pdf(str(c)), head_style) for c in cols]]
+                for r in rows:
+                    data.append(
+                        [
+                            Paragraph(_inline_pdf(str(r[c_i])) if c_i < len(r) else "",
+                                      cell_style)
+                            for c_i in range(len(cols))
+                        ]
+                    )
+                widths = _fit_col_widths(cols, rows, avail)
+                # An indented table gets a blank spacer column so it lines up with the
+                # quoted text around it; reportlab tables have no left indent of their own.
+                x0 = 0
+                if indent:
+                    x0 = 1
+                    widths = [indent] + widths
+                    data = [[""] + row for row in data]
+                tbl = Table(data, colWidths=widths, hAlign="LEFT", repeatRows=1)
+                tbl.setStyle(
+                    TableStyle(
+                        [
+                            ("BACKGROUND", (x0, 0), (-1, 0), colors.HexColor("#EEF2FF")),
+                            ("ROWBACKGROUNDS", (x0, 1), (-1, -1),
+                             [colors.white, colors.HexColor("#F8FAFC")]),
+                            ("GRID", (x0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                            ("TOPPADDING", (0, 0), (-1, -1), 4),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                        ]
+                        + ([("LEFTPADDING", (0, 0), (0, -1), 0),
+                            ("RIGHTPADDING", (0, 0), (0, -1), 0)] if x0 else [])
+                    )
                 )
-            tbl = Table(
-                data, colWidths=_fit_col_widths(cols, rows, content_width),
-                hAlign="LEFT", repeatRows=1,
-            )
-            tbl.setStyle(
-                TableStyle(
-                    [
-                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEF2FF")),
-                        ("ROWBACKGROUNDS", (0, 1), (-1, -1),
-                         [colors.white, colors.HexColor("#F8FAFC")]),
-                        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
-                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                        ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                        ("TOPPADDING", (0, 0), (-1, -1), 4),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                    ]
-                )
-            )
-            flow.append(tbl)
-            flow.append(Spacer(1, 8))
-    return flow
+                flow.append(tbl)
+                flow.append(Spacer(1, 8))
+        return flow
+
+    return render(parse_blocks(md))
