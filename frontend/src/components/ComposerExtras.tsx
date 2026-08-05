@@ -57,6 +57,11 @@ export function useVoiceInput(
   return { listening, toggleVoice };
 }
 
+/** Menu sizing used when working out which side of the "+" button has room. */
+const MENU_MAX_HEIGHT = 288;
+const MENU_MIN_HEIGHT = 160;
+const MENU_GAP = 44; // button offset (top-9/bottom-9) plus a little breathing room
+
 /**
  * The composer's "+" menu: attach files, capture a screenshot, dictate, drop in a snippet.
  *
@@ -68,26 +73,45 @@ export function AttachMenu({
   onVoice,
   listening,
   onSnippet,
-  align = "bottom",
+  align,
 }: {
   onPickFiles: () => void;
   onCapture: () => void;
   onVoice: () => void;
   listening: boolean;
   onSnippet: (content: string) => void;
-  /** Where the menu opens relative to the button. */
+  /** Force a side; by default the menu flips up when there isn't room below. */
   align?: "bottom" | "top";
 }) {
   const [open, setOpen] = useState(false);
+  // The composer usually sits at the bottom of the window, so a menu that always opens
+  // downwards is half off-screen. Decide the side (and the height it can use) on open.
+  const [placement, setPlacement] = useState({ up: false, maxHeight: MENU_MAX_HEIGHT });
   const ref = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
   const { data: snippets = [] } = useSnippets();
   useDismiss(ref, open, () => setOpen(false));
+
+  function toggle() {
+    if (!open) {
+      const rect = btnRef.current?.getBoundingClientRect();
+      const below = rect ? window.innerHeight - rect.bottom - MENU_GAP : MENU_MAX_HEIGHT;
+      const above = rect ? rect.top - MENU_GAP : 0;
+      const up = align ? align === "top" : below < Math.min(MENU_MAX_HEIGHT, above);
+      setPlacement({
+        up,
+        maxHeight: Math.max(MENU_MIN_HEIGHT, Math.min(MENU_MAX_HEIGHT, up ? above : below)),
+      });
+    }
+    setOpen((o) => !o);
+  }
 
   return (
     <div className="relative" ref={ref}>
       <button
+        ref={btnRef}
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggle}
         title="Add attachment or action"
         className="flex h-7 w-7 items-center justify-center rounded-full border border-gray-300 text-lg leading-none text-gray-600 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
       >
@@ -95,8 +119,9 @@ export function AttachMenu({
       </button>
       {open && (
         <div
-          className={`absolute left-0 z-30 max-h-72 w-60 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-900 ${
-            align === "top" ? "bottom-9" : "top-9"
+          style={{ maxHeight: placement.maxHeight }}
+          className={`absolute left-0 z-30 w-60 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-900 ${
+            placement.up ? "bottom-9" : "top-9"
           }`}
         >
           <button
