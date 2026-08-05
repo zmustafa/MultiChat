@@ -26,6 +26,9 @@ export interface LiveLane {
 
 export type LiveMap = Record<string, LiveLane>;
 
+/** Minimum gap between streamed-text state flushes (see flushChunks). */
+const STREAM_FLUSH_MS = 100;
+
 export function useBroadcast(sessionId: string | null, onComplete?: () => void) {
   const [live, setLive] = useState<LiveMap>({});
   // Track each in-flight stream by key so multiple lanes can regenerate concurrently
@@ -37,9 +40,11 @@ export function useBroadcast(sessionId: string | null, onComplete?: () => void) 
   const streaming = activeKeys.size > 0;
 
   // Chunk coalescing buffers (see flushChunks below): accumulate per-lane token deltas and
-  // flush them in one state update per animation frame instead of one setLive per token.
+  // flush them on a throttled cadence instead of one setLive per token.
   const chunkBufRef = useRef<Record<string, string>>({});
   const rafRef = useRef<number | null>(null);
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastFlushRef = useRef(0);
 
   // When the active session changes (switching chats or opening a brand-new chat), tear
   // down any client-side streams from the previous session and clear their state. The
@@ -56,18 +61,32 @@ export function useBroadcast(sessionId: string | null, onComplete?: () => void) 
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     }
+    if (flushTimerRef.current != null) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
     chunkBufRef.current = {};
   }, [sessionId]);
 
   // Chunk coalescing: token chunks can arrive dozens of times per second per lane. Applying
   // each one as its own setLive re-renders the whole compare grid every token. Instead we
-  // buffer incoming deltas per lane and flush them all in ONE state update per animation
-  // frame — cutting streaming re-renders by an order of magnitude while looking identical.
+  // buffer incoming deltas per lane and flush them all in ONE state update.
+  //
+  // The flush is throttled to STREAM_FLUSH_MS rather than fired every animation frame: each
+  // flush makes react-markdown re-parse and re-highlight the WHOLE accumulated answer, which
+  // on a long response costs more than a frame budget. At 60fps that overruns every frame and
+  // the transcript visibly flickers/janks; a ~10Hz cadence still looks like live typing while
+  // leaving the browser time to paint.
   const flushChunks = useCallback(() => {
     if (rafRef.current != null) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     }
+    if (flushTimerRef.current != null) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    lastFlushRef.current = Date.now();
     const buf = chunkBufRef.current;
     const ids = Object.keys(buf);
     if (ids.length === 0) return;
@@ -83,6 +102,18 @@ export function useBroadcast(sessionId: string | null, onComplete?: () => void) 
       return next;
     });
   }, []);
+
+  // Schedule the next flush: immediately (on the next animation frame) if enough time has
+  // passed since the last one, otherwise on a timer for the remainder of the interval.
+  const scheduleFlush = useCallback(() => {
+    if (rafRef.current != null || flushTimerRef.current != null) return;
+    const elapsed = Date.now() - lastFlushRef.current;
+    if (elapsed >= STREAM_FLUSH_MS) {
+      rafRef.current = requestAnimationFrame(flushChunks);
+    } else {
+      flushTimerRef.current = setTimeout(flushChunks, STREAM_FLUSH_MS - elapsed);
+    }
+  }, [flushChunks]);
 
   const update = useCallback(
     (laneId: string, patch: Partial<LiveLane>) => {
@@ -123,9 +154,7 @@ export function useBroadcast(sessionId: string | null, onComplete?: () => void) 
         case "chunk":
           chunkBufRef.current[d.lane_id] =
             (chunkBufRef.current[d.lane_id] || "") + d.delta;
-          if (rafRef.current == null) {
-            rafRef.current = requestAnimationFrame(flushChunks);
-          }
+          scheduleFlush();
           break;
         case "tool_call":
           setLive((prev) => {
@@ -192,7 +221,7 @@ export function useBroadcast(sessionId: string | null, onComplete?: () => void) 
           break;
       }
     },
-    [update, flushChunks]
+    [update, flushChunks, scheduleFlush]
   );
 
   const runStream = useCallback(

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Lane, LaneMessage, Provider, Turn } from "../api/types";
 import { mediaUrl } from "../api/client";
 import type { LiveLane } from "../hooks/useBroadcast";
@@ -686,25 +686,31 @@ export function LaneColumn({
   // Rendered DOM per persisted message, so a PDF export can grab that message's diagrams.
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const stickToBottom = useRef(true);
-  const prevScrollTop = useRef(0);
-  const programmaticScroll = useRef(false);
+  // The scrollTop WE last set when pinning to the bottom. Comparing against it is how we
+  // tell our own scroll events apart from the user's. A one-shot boolean flag does not
+  // work here: pinning when already at the bottom fires NO scroll event, so the flag stays
+  // set and then swallows the user's next real scroll — which is why scrolling up during a
+  // long streamed answer used to snap straight back down and made it unreadable.
+  const lastPinnedTop = useRef(-1);
+  const pinToBottom = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    lastPinnedTop.current = el.scrollTop;
+  };
   const handleScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
     const cur = el.scrollTop;
-    const nearBottom = el.scrollHeight - cur - el.clientHeight < 60;
-    // Our own scroll-to-bottom fires a scroll event too — never treat it as the user
-    // scrolling away. Streaming content also grows scrollHeight, which can momentarily
-    // put the position "off bottom"; that must NOT pause following. We only pause when
-    // the position actually moves UP (user wheel/drag), which lowers scrollTop.
-    if (programmaticScroll.current) {
-      programmaticScroll.current = false;
-    } else if (nearBottom) {
-      stickToBottom.current = true;
-    } else if (cur < prevScrollTop.current - 2) {
-      stickToBottom.current = false;
-    }
-    prevScrollTop.current = cur;
+    // Our own pin (or the browser's sub-pixel echo of it) — not a user gesture.
+    if (Math.abs(cur - lastPinnedTop.current) <= 1) return;
+    stickToBottom.current = el.scrollHeight - cur - el.clientHeight < 60;
+  };
+  // Wheel/touch/keyboard are the unambiguous signals that the user took over. Acting on
+  // them directly stops the follow BEFORE the next streamed chunk can re-pin, so reading
+  // back through a long answer while it is still generating actually works.
+  const handleUserScrollIntent = (deltaUp: boolean) => {
+    if (deltaUp) stickToBottom.current = false;
   };
   // Reset stickiness only when a NEW message starts (the live turn id changes), so the
   // next response follows to the bottom even if the user scrolled up during the previous
@@ -713,13 +719,12 @@ export function LaneColumn({
   useEffect(() => {
     stickToBottom.current = true;
   }, [live?.turnId]);
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el && stickToBottom.current) {
-      programmaticScroll.current = true;
-      el.scrollTop = el.scrollHeight;
-      prevScrollTop.current = el.scrollTop;
-    }
+  // useLayoutEffect (NOT useEffect): a passive effect runs AFTER the browser has painted,
+  // so every streamed chunk would paint the taller transcript at the OLD scroll position
+  // and only then snap to the bottom — which reads as a flicker/jitter on long answers.
+  // Scrolling in the layout phase makes the growth and the re-pin land in the same frame.
+  useLayoutEffect(() => {
+    if (stickToBottom.current) pinToBottom();
   }, [
     live?.content,
     live?.status,
@@ -733,16 +738,12 @@ export function LaneColumn({
   // settles) and images that load in. Those don't change any of the effect deps above, so
   // without this the lane would be left short of the bottom. A ResizeObserver on the
   // content re-pins to the bottom whenever it grows while the user is stuck there.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = scrollRef.current;
     const content = contentRef.current;
     if (!el || !content || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => {
-      if (stickToBottom.current) {
-        programmaticScroll.current = true;
-        el.scrollTop = el.scrollHeight;
-        prevScrollTop.current = el.scrollTop;
-      }
+      if (stickToBottom.current) pinToBottom();
     });
     ro.observe(content);
     return () => ro.disconnect();
@@ -912,6 +913,13 @@ export function LaneColumn({
           <div
             ref={scrollRef}
             onScroll={handleScroll}
+            onWheel={(e) => handleUserScrollIntent(e.deltaY < 0)}
+            onTouchMove={() => handleUserScrollIntent(true)}
+            onKeyDown={(e) =>
+              handleUserScrollIntent(
+                ["ArrowUp", "PageUp", "Home"].includes(e.key),
+              )
+            }
             data-lane-scroll
             className={`min-h-0 flex-1 overflow-y-auto ${
               isEmpty ? "flex flex-col" : ""
