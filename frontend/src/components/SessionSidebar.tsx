@@ -30,6 +30,42 @@ function relTime(iso: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+/** Ultra-short age for the single-line row ("now", "5m", "3h", "2d", "4 Mar"). */
+function shortAge(iso: string): string {
+  const d = asUtcDate(iso);
+  const m = Math.floor((Date.now() - d.getTime()) / 60000);
+  if (m < 1) return "now";
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  const days = Math.floor(h / 24);
+  if (days < 7) return `${days}d`;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/** Which "Today / Yesterday / …" section a chat belongs to, by last activity. */
+const DATE_BUCKETS = [
+  "Today",
+  "Yesterday",
+  "Previous 7 days",
+  "Previous 30 days",
+  "Older",
+] as const;
+
+function dateBucket(iso: string): (typeof DATE_BUCKETS)[number] {
+  const d = asUtcDate(iso);
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const daysAgo = Math.floor(
+    (startOfToday.getTime() - d.getTime()) / 86400000,
+  );
+  if (daysAgo < 0) return "Today";
+  if (daysAgo < 1) return "Yesterday";
+  if (daysAgo < 7) return "Previous 7 days";
+  if (daysAgo < 30) return "Previous 30 days";
+  return "Older";
+}
+
 export function SessionSidebar({
   sessions,
   personas,
@@ -401,8 +437,7 @@ export function SessionSidebar({
                 </div>
               );
             })}
-            {renderGroup(
-              folders.length || sessions.some((s) => s.pinned) ? "Chats" : "",
+            {renderDateGroups(
               sessions.filter((s) => !s.folder_id && !s.archived && !s.pinned && !s.trashed)
             )}
             {sessions.some((s) => s.archived && !s.trashed) && (
@@ -513,6 +548,23 @@ export function SessionSidebar({
     );
   }
 
+  /**
+   * The loose (unfiled) chats, split into Today / Yesterday / … headers by last activity.
+   * Dating the SECTION instead of every row is what lets each row be a single line.
+   */
+  function renderDateGroups(items: SessionListItem[]) {
+    const buckets = new Map<string, SessionListItem[]>();
+    for (const s of items) {
+      const b = dateBucket(s.updated_at);
+      const list = buckets.get(b);
+      if (list) list.push(s);
+      else buckets.set(b, [s]);
+    }
+    return DATE_BUCKETS.map((label) => (
+      <div key={label}>{renderGroup(label, buckets.get(label) ?? [])}</div>
+    ));
+  }
+
   /** The All / Chats / Panels filter, applied everywhere rows are listed. */
   function matchesKind(s: SessionListItem) {
     if (kind === "all") return true;
@@ -533,10 +585,23 @@ export function SessionSidebar({
         : s.converged
           ? "converged"
           : (s.status || "").replace("_", " ");
+    // Rows are a single line, so everything that used to sit on the second line lives in
+    // the hover tooltip instead — nothing is lost, it just costs no vertical space.
+    const metaText = [
+      s.title,
+      isDelib
+        ? `${s.lane_count} model${s.lane_count === 1 ? "" : "s"} · ${verdict}${
+            s.total_calls ? ` · ${s.total_calls} calls` : ""
+          }`
+        : `${s.lane_count} lanes · ${s.message_count} msg${
+            s.message_count === 1 ? "" : "s"
+          }`,
+      `${relTime(s.updated_at)} · ${asUtcDate(s.updated_at).toLocaleString()}`,
+    ].join("\n");
     return (
       <div
         key={s.id}
-        className={`group flex items-center gap-1 px-2 py-2 text-sm ${
+        className={`group flex items-center gap-1 px-2 py-1 text-sm ${
           isActive
             ? "bg-brand/10"
             : "hover:bg-gray-100 dark:hover:bg-gray-800"
@@ -580,33 +645,24 @@ export function SessionSidebar({
               setEditing(s.id);
               setDraft(s.title);
             }}
-            className={`flex min-w-0 flex-1 items-start gap-1.5 text-left ${isActive ? "text-brand" : "text-gray-700 dark:text-gray-200"}`}
+            title={metaText}
+            className={`flex min-w-0 flex-1 items-center gap-1.5 text-left ${isActive ? "text-brand" : "text-gray-700 dark:text-gray-200"}`}
           >
-            <span
-              className="w-4 shrink-0 pt-0.5 text-center text-xs"
-              title={isDelib ? "Deliberation" : "Chat"}
-            >
-              {isDelib ? "⚖️" : "💬"}
+            {/* Only panels carry a glyph — chats are the norm, so an icon on every row is
+                just a column of noise stealing width from the title. */}
+            {isDelib && (
+              <span className="shrink-0 text-xs" title="Deliberation">
+                ⚖️
+              </span>
+            )}
+            <span className="min-w-0 flex-1 truncate font-medium">
+              {s.pinned && "📌 "}
+              {s.title}
             </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate font-medium">
-                {s.pinned && "📌 "}
-                {s.title}
-              </span>
-              <span className="block truncate text-xs text-gray-500 dark:text-gray-400">
-                {isDelib ? (
-                  <>
-                    {relTime(s.updated_at)} · {s.lane_count} model
-                    {s.lane_count === 1 ? "" : "s"} · {verdict}
-                    {s.total_calls ? ` · ${s.total_calls} calls` : ""}
-                  </>
-                ) : (
-                  <>
-                    {relTime(s.updated_at)} · {s.lane_count} lanes · {s.message_count}{" "}
-                    msg{s.message_count === 1 ? "" : "s"}
-                  </>
-                )}
-              </span>
+            {/* Lane/message counts moved into the row tooltip so each chat is ONE line;
+                only a 2–3 character age stays visible, and it yields to the hover actions. */}
+            <span className="shrink-0 text-[10px] tabular-nums text-gray-400 group-hover:hidden">
+              {shortAge(s.updated_at)}
             </span>
           </button>
         )}
