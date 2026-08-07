@@ -62,6 +62,35 @@ const STARTER_PROMPTS = [
 const PERSONA_STARTER =
   "Based on your instructions, what are you set up to help me with?";
 
+/** Queued messages live per chat in localStorage so they survive navigating away. */
+const queueStorageKey = (sessionId: string) => `multichat_queue:${sessionId}`;
+
+type PersistedQueue = { queue: QueuedMessage[]; served: Record<string, string[]> };
+
+function loadQueue(sessionId: string | null): PersistedQueue {
+  const empty: PersistedQueue = { queue: [], served: {} };
+  if (!sessionId) return empty;
+  try {
+    const raw = localStorage.getItem(queueStorageKey(sessionId));
+    if (!raw) return empty;
+    const parsed = JSON.parse(raw) as Partial<PersistedQueue> | null;
+    const queue = Array.isArray(parsed?.queue)
+      ? parsed.queue.filter((m): m is QueuedMessage => !!m && typeof m.id === "string")
+      : [];
+    const served: Record<string, string[]> = {};
+    for (const [id, lanes] of Object.entries(parsed?.served ?? {})) {
+      if (Array.isArray(lanes)) served[id] = lanes.filter((l) => typeof l === "string");
+    }
+    return { queue, served };
+  } catch {
+    return empty;
+  }
+}
+
+function toServedSets(served: Record<string, string[]>): Record<string, Set<string>> {
+  return Object.fromEntries(Object.entries(served).map(([id, lanes]) => [id, new Set(lanes)]));
+}
+
 export function ComparePage() {
   const { logout, user } = useAuth();
   const qc = useQueryClient();
@@ -138,13 +167,30 @@ export function ComparePage() {
   // Reactive mirror of servedRef, used only to render the per-lane queued bars (so a
   // lane's bar disappears once the message has been dispatched to it).
   const [servedView, setServedView] = useState<Record<string, string[]>>({});
-  // Clear the queue when switching chats.
-  useEffect(() => {
-    setQueue([]);
-    servedRef.current = {};
+  // Load the chat's saved queue on mount and whenever the chat changes. This is a
+  // render-phase reset (React's documented pattern for deriving state from a changing
+  // prop) rather than an effect, so the persist effect below never observes the previous
+  // chat's queue under the new chat's id.
+  const queueSessionRef = useRef<string | null | undefined>(undefined);
+  if (queueSessionRef.current !== activeId) {
+    queueSessionRef.current = activeId;
+    const restored = loadQueue(activeId);
+    setQueue(restored.queue);
+    setServedView(restored.served);
+    servedRef.current = toServedSets(restored.served);
     dispatchingRef.current = new Set();
-    setServedView({});
-  }, [activeId]);
+  }
+  // Persist the queue so navigating to another chat and back doesn't drop it.
+  useEffect(() => {
+    if (!activeId) return;
+    const key = queueStorageKey(activeId);
+    try {
+      if (queue.length === 0) localStorage.removeItem(key);
+      else localStorage.setItem(key, JSON.stringify({ queue, served: servedView }));
+    } catch {
+      // Quota or private-mode failures must never break sending.
+    }
+  }, [activeId, queue, servedView]);
   const [navCollapsed, setNavCollapsed] = useState(
     () => localStorage.getItem("multichat_nav_collapsed") === "1"
   );
