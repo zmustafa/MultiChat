@@ -37,6 +37,37 @@ _RESPONSES_ERROR_MARKERS = (
     "/chat/completions endpoint",
 )
 
+# Conservative per-family output-token ceilings, used only when the endpoint does not
+# advertise a real limit. `settings.LLM_MAX_TOKENS` is a global upper bound; a model that
+# cannot emit that many tokens would reject the request, so the cap is clamped first.
+_DEFAULT_MAX_OUTPUT = 16384
+_MAX_OUTPUT_BY_PREFIX: tuple[tuple[str, int], ...] = (
+    ("gpt-3.5", 4096),
+    ("gpt-4-", 4096),
+    ("gpt-4o", 16384),
+    ("gpt-4.1", 32768),
+    ("gpt-5", 100000),
+    ("claude", 64000),
+    ("gemini", 65536),
+    ("o1", 100000),
+    ("o3", 100000),
+    ("o4", 100000),
+)
+# Ceilings learned at runtime from a rejected request, keyed by lowercased model id.
+_LEARNED_MAX_OUTPUT: dict[str, int] = {}
+# `capabilities.limits.max_output_tokens` as advertised by an endpoint's /models route
+# (GitHub Copilot and several gateways expose it), keyed by endpoint then model id.
+_ADVERTISED_MAX_OUTPUT: dict[str, dict[str, int]] = {}
+
+
+def _static_max_output_tokens(model: str) -> int:
+    m = (model or "").lower()
+    for prefix, limit in _MAX_OUTPUT_BY_PREFIX:
+        if m.startswith(prefix):
+            return limit
+    return _DEFAULT_MAX_OUTPUT
+
+
 _PROVIDER_NAMES = {
     "openai": "OpenAI",
     "openai_eu": "OpenAI (EU)",
@@ -139,6 +170,7 @@ class OpenAIProvider(LLMProvider):
 
         tool_fragments: dict[int, dict[str, Any]] = {}
         cap = int(max_tokens) if max_tokens else settings.LLM_MAX_TOKENS
+        cap = max(1, min(await self._model_max_output(), cap))
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
@@ -164,6 +196,13 @@ class OpenAIProvider(LLMProvider):
             if cap_val and "max_completion_tokens" in msg:
                 _NEEDS_MAX_COMPLETION_TOKENS.add(self._model)
                 kwargs["max_completion_tokens"] = cap_val
+                retry = True
+            elif cap_val and cap_val > 4096 and (
+                "max_tokens" in msg or "max_output_tokens" in msg
+            ):
+                # Gateway rejected the requested ceiling; remember a safe value.
+                _LEARNED_MAX_OUTPUT[self._model.lower()] = 4096
+                kwargs[cap_param] = 4096
                 retry = True
             elif "stream_options" in msg:
                 kwargs.pop("stream_options", None)
@@ -243,6 +282,42 @@ class OpenAIProvider(LLMProvider):
 
     def _uses_official_openai_api(self) -> bool:
         return self._provider in ("openai", "openai_eu")
+
+    async def _model_max_output(self) -> int:
+        """Largest output-token cap this model accepts.
+
+        Prefers a ceiling learned from a rejected request, then the one the endpoint
+        advertises on /models, and finally the static per-family table.
+        """
+        model = (self._model or "").lower()
+        if model in _LEARNED_MAX_OUTPUT:
+            return _LEARNED_MAX_OUTPUT[model]
+        advertised = await self._advertised_limits()
+        if model in advertised:
+            return advertised[model]
+        return _static_max_output_tokens(self._model)
+
+    async def _advertised_limits(self) -> dict[str, int]:
+        """`capabilities.limits.max_output_tokens` per model, fetched once per endpoint."""
+        key = f"{self._provider}|{self._responses_base_url}"
+        cached = _ADVERTISED_MAX_OUTPUT.get(key)
+        if cached is not None:
+            return cached
+        limits: dict[str, int] = {}
+        try:
+            resp = await self._client.models.list()
+            for m in resp.data:
+                raw = m.model_dump() if hasattr(m, "model_dump") else {}
+                value = ((raw.get("capabilities") or {}).get("limits") or {}).get(
+                    "max_output_tokens"
+                )
+                model_id = str(raw.get("id") or "").lower()
+                if model_id and isinstance(value, int) and value > 0:
+                    limits[model_id] = value
+        except Exception:  # noqa: BLE001 - discovery is best effort
+            limits = {}
+        _ADVERTISED_MAX_OUTPUT[key] = limits
+        return limits
 
     def _should_fallback_to_responses(
         self,

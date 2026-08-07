@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     MAX_GENERATE_CALLS: int = 6
 
     # LLM generation
-    LLM_MAX_TOKENS: int = 4096
+    LLM_MAX_TOKENS: int = 32000
     LLM_REQUEST_TIMEOUT: float = 120.0
 
     # deliberation (multi-model peer review)

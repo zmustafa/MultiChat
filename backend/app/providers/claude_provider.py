@@ -21,6 +21,12 @@ ANTHROPIC_VERSION = "2023-06-01"
 OAUTH_BETA = "oauth-2025-04-20"
 CLAUDE_CODE_SYSTEM = "You are Claude Code, Anthropic's official CLI for Claude."
 
+# Per-model output-token ceilings. Anthropic rejects a `max_tokens` above the
+# model's limit, so the request cap is clamped to these before being sent.
+# Claude 3.x tops out at 8192 (4096 for 3.0/opus-3); 4.x and newer allow far more.
+CLAUDE_LEGACY_MAX_OUTPUT = 8192
+CLAUDE_DEFAULT_MAX_OUTPUT = 32000
+
 CLAUDE_FALLBACK_MODELS = [
     "claude-opus-4-6",
     "claude-sonnet-4-6",
@@ -30,6 +36,14 @@ CLAUDE_FALLBACK_MODELS = [
     "claude-3-5-sonnet-latest",
     "claude-3-5-haiku-latest",
 ]
+
+
+def _max_output_tokens(model: str) -> int:
+    """Largest `max_tokens` the given Claude model accepts."""
+    m = (model or "").lower()
+    if "claude-3" in m or "claude-2" in m or "claude-instant" in m:
+        return CLAUDE_LEGACY_MAX_OUTPUT
+    return CLAUDE_DEFAULT_MAX_OUTPUT
 
 
 def _user_content_to_anthropic(content: Any) -> Any:
@@ -164,7 +178,7 @@ class ClaudeProvider(LLMProvider):
         cap = int(max_tokens) if max_tokens else settings.LLM_MAX_TOKENS
         payload: dict[str, Any] = {
             "model": self._model,
-            "max_tokens": min(8000, cap),
+            "max_tokens": max(1, min(_max_output_tokens(self._model), cap)),
             "messages": anthropic_msgs,
             "stream": True,
         }
@@ -183,6 +197,7 @@ class ClaudeProvider(LLMProvider):
         url = f"{self._base_url}/v1/messages"
         blocks: dict[int, dict[str, Any]] = {}
         completion_tokens = 0
+        truncated = False
 
         _timeout = httpx.Timeout(settings.LLM_REQUEST_TIMEOUT, connect=15.0)
         yield StreamEvent(type="status", phase="connecting", text=f"Connecting to Claude · {self._model}…")
@@ -232,6 +247,8 @@ class ClaudeProvider(LLMProvider):
                     elif etype == "message_delta":
                         usage = evt.get("usage", {})
                         completion_tokens = usage.get("output_tokens", completion_tokens)
+                        if (evt.get("delta") or {}).get("stop_reason") == "max_tokens":
+                            truncated = True
                     elif etype == "error":
                         msg = (evt.get("error") or {}).get("message", "unknown")
                         raise RuntimeError(f"Claude error: {msg}")
@@ -248,6 +265,13 @@ class ClaudeProvider(LLMProvider):
                 )
         if calls:
             yield StreamEvent(type="tool_calls", tool_calls=calls)
+
+        if truncated and not calls:
+            yield StreamEvent(
+                type="status",
+                phase="truncated",
+                text=f"Response hit the {payload['max_tokens']}-token output limit and was cut short.",
+            )
 
         yield StreamEvent(type="done", completion_tokens=max(1, completion_tokens))
 
