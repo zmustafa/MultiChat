@@ -10,6 +10,7 @@ tokens with proper document formatting for each backend.
 from __future__ import annotations
 
 import io
+import itertools
 import os
 import re
 import unicodedata
@@ -543,6 +544,85 @@ def pdf_safe(text: str) -> str:
                 repl = ""
         out.append("".join(c for c in repl if ok(c)))
     return "".join(out)
+
+
+def footer_canvas(
+    footer_left: str,
+    font: str,
+    pagesize: tuple[float, float] | None = None,
+    margin: float = 54.0,
+    attribution: bool = True,
+):
+    """Canvas subclass stamping a rule, context text, repo link and "Page X of Y".
+
+    The page count is only known once the whole story is laid out, so pages are buffered
+    and replayed on save. The centre slot carries a clickable link to the project repo
+    (``settings.APP_REPO_URL``); pass ``attribution=False`` to leave it out.
+    """
+    from reportlab.lib.colors import HexColor
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfgen import canvas as pdf_canvas
+
+    from .config import settings
+
+    page_w, _page_h = pagesize or LETTER
+    repo_url = (settings.APP_REPO_URL or "").strip() if attribution else ""
+    # Show the bare host/path; the full URL stays behind the link.
+    repo_label = pdf_safe(re.sub(r"^https?://", "", repo_url)) if repo_url else ""
+    # Pages are replayed from buffered state on save, which rewinds reportlab's annotation
+    # counter - every footer link would then be named "Annot.NUMBER1" and the second one
+    # would raise "redefining named object". This counter keeps the names unique; the high
+    # base keeps it clear of the names used by links inside the document body.
+    link_seq = itertools.count(1_000_000)
+
+    class FooterCanvas(pdf_canvas.Canvas):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._pages: list[dict] = []
+
+        def showPage(self):  # noqa: N802 — reportlab API
+            self._pages.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total = len(self._pages)
+            for state in self._pages:
+                self.__dict__.update(state)
+                self._stamp(total)
+                super().showPage()
+            super().save()
+
+        def _stamp(self, total: int) -> None:
+            self.saveState()
+            self.setStrokeColor(HexColor("#E2E8F0"))
+            self.setLineWidth(0.5)
+            self.line(margin, 44, page_w - margin, 44)
+            self.setFont(font, 7.5)
+            self.setFillColor(HexColor("#94A3B8"))
+            # The left slot is capped to a third of the usable width so a long title
+            # can never collide with the centred link.
+            usable = page_w - 2 * margin
+            self._draw_clipped(pdf_safe(footer_left), margin, 32, usable / 3.0)
+            self.drawRightString(page_w - margin, 32, f"Page {self._pageNumber} of {total}")
+            if repo_label:
+                self._draw_link(page_w / 2.0, 32)
+            self.restoreState()
+
+        def _draw_clipped(self, text: str, x: float, y: float, max_width: float) -> None:
+            while text and pdfmetrics.stringWidth(text, font, 7.5) > max_width:
+                text = text[:-1]
+            self.drawString(x, y, text)
+
+        def _draw_link(self, cx: float, y: float) -> None:
+            self.setFillColor(HexColor("#6366F1"))
+            self.drawCentredString(cx, y, repo_label)
+            width = pdfmetrics.stringWidth(repo_label, font, 7.5)
+            self._annotationCount = next(link_seq)
+            self.linkURL(repo_url, (cx - width / 2, y - 2, cx + width / 2, y + 8), relative=0)
+            self.setFillColor(HexColor("#94A3B8"))
+
+    return FooterCanvas
 
 
 def _inline_pdf(text: str) -> str:

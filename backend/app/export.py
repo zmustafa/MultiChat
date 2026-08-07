@@ -228,7 +228,7 @@ def _export_pdf(db, session, path, diagrams=None) -> None:
     from reportlab.lib.units import inch
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
-    from .markdown_render import markdown_pdf_flowables
+    from .markdown_render import markdown_pdf_flowables, pdf_fonts
 
     lanes, turns, by_key, lane_label = _gather(db, session)
     doc_title = _document_title(db, session)
@@ -269,7 +269,10 @@ def _export_pdf(db, session, path, diagrams=None) -> None:
                     msg.content, body, diagrams=diagrams, content_width=content_width
                 )
             )
-    doc.build(story)
+    doc.build(
+        story,
+        canvasmaker=_numbered_canvas(doc_title, pdf_fonts()["body"], margin=0.8 * inch),
+    )
 
 
 _BUILDERS = {"md": _export_markdown, "docx": _export_docx, "pdf": _export_pdf}
@@ -303,48 +306,13 @@ def export_session(db: DbSession, session: ChatSession, fmt: str, diagrams=None)
 _PAGE_MARGIN = 54.0  # 0.75in — US Letter
 
 
-def _numbered_canvas(footer_left: str, font: str):
-    """Canvas subclass that stamps a rule + "Page X of Y" footer on every page.
-
-    Page count is only known once the whole story is laid out, so pages are buffered and
-    replayed on save.
-    """
-    from reportlab.lib.colors import HexColor
+def _numbered_canvas(footer_left: str, font: str, margin: float = _PAGE_MARGIN):
+    """Footer canvas for Letter-portrait exports (see markdown_render.footer_canvas)."""
     from reportlab.lib.pagesizes import LETTER
-    from reportlab.pdfgen import canvas as pdf_canvas
 
-    class NumberedCanvas(pdf_canvas.Canvas):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self._pages: list[dict] = []
+    from .markdown_render import footer_canvas
 
-        def showPage(self):  # noqa: N802 — reportlab API
-            self._pages.append(dict(self.__dict__))
-            self._startPage()
-
-        def save(self):
-            total = len(self._pages)
-            for state in self._pages:
-                self.__dict__.update(state)
-                self._stamp(total)
-                super().showPage()
-            super().save()
-
-        def _stamp(self, total: int) -> None:
-            width, _ = LETTER
-            self.saveState()
-            self.setStrokeColor(HexColor("#E2E8F0"))
-            self.setLineWidth(0.5)
-            self.line(_PAGE_MARGIN, 44, width - _PAGE_MARGIN, 44)
-            self.setFont(font, 7.5)
-            self.setFillColor(HexColor("#94A3B8"))
-            self.drawString(_PAGE_MARGIN, 32, footer_left[:110])
-            self.drawRightString(
-                width - _PAGE_MARGIN, 32, f"Page {self._pageNumber} of {total}"
-            )
-            self.restoreState()
-
-    return NumberedCanvas
+    return footer_canvas(footer_left, font, pagesize=LETTER, margin=margin)
 
 
 def _accent_card(text_flowables: list, width: float, bg: str, accent: str):

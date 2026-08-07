@@ -21,6 +21,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from ..markdown_render import footer_canvas, pdf_fonts
 from .artifacts import (
     download_result,
     generated_dir,
@@ -380,7 +381,15 @@ class PdfGenerateTool:
 
                 story.append(Spacer(1, 6))
 
-            doc.build(story)
+            doc.build(
+                story,
+                canvasmaker=footer_canvas(
+                    title,
+                    pdf_fonts()["body"],
+                    pagesize=pagesize,
+                    margin=0.9 * inch,
+                ),
+            )
         except Exception as exc:  # noqa: BLE001
             return ToolResult(content=f"Failed to build PDF: {exc}", citations=None)
 

@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     LLM_MAX_TOKENS: int = 32000
     LLM_REQUEST_TIMEOUT: float = 120.0
 
+    # Attribution stamped into the footer of generated PDFs. Set to "" to omit it.
+    APP_REPO_URL: str = "https://github.com/zmustafa/MultiChat"
+
     # deliberation (multi-model peer review)
     DELIBERATION_MAX_PARTICIPANTS: int = 5
     # Sycophancy intensifies from round 3 onwards, so the cap is deliberately low.
