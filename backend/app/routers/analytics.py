@@ -22,27 +22,70 @@ router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
 
 # Rough public per-model rates (USD per 1M tokens: input, output). Prefix-matched.
-# Used only for a visibility estimate — NOT billing.
+# Used only for a visibility estimate — NOT billing. Standard (non-batch, non-cached,
+# short-context) list prices; verified against the public pricing pages on 2026-08-08:
+#   OpenAI    https://developers.openai.com/api/docs/pricing
+#   Anthropic https://platform.claude.com/docs/en/about-claude/pricing
+#   Google    https://ai.google.dev/gemini-api/docs/pricing
+# Order matters: entries are substring-matched, so put the more specific name first.
 _PRICES: list[tuple[str, float, float]] = [
+    # --- OpenAI ---
+    ("gpt-5.6-sol", 5.00, 30.00),
+    ("gpt-5.6-terra", 2.00, 12.00),
+    ("gpt-5.6-luna", 0.20, 1.20),
+    ("gpt-5.5-pro", 30.00, 180.00),
+    ("gpt-5.5", 5.00, 30.00),
+    ("gpt-5.4-pro", 30.00, 180.00),
+    ("gpt-5.4-mini", 0.75, 4.50),
+    ("gpt-5.4-nano", 0.20, 1.25),
+    ("gpt-5.4", 2.50, 15.00),
+    ("gpt-5.3", 1.75, 14.00),
+    ("gpt-5.2-pro", 21.00, 168.00),
+    ("gpt-5.2", 1.75, 14.00),
+    ("gpt-5.1", 1.25, 10.00),
+    ("gpt-5-pro", 15.00, 120.00),
+    ("gpt-5-mini", 0.25, 2.00),
+    ("gpt-5-nano", 0.05, 0.40),
+    ("gpt-5", 1.25, 10.00),
+    ("gpt-4.1-mini", 0.40, 1.60),
+    ("gpt-4.1-nano", 0.10, 0.40),
+    ("gpt-4.1", 2.00, 8.00),
     ("gpt-4o-mini", 0.15, 0.60),
     ("gpt-4o", 2.50, 10.00),
-    ("gpt-4.1-mini", 0.40, 1.60),
-    ("gpt-4.1", 2.00, 8.00),
-    ("gpt-5.4-mini", 0.50, 1.50),
-    ("gpt-5.5", 5.00, 15.00),
-    ("gpt-5.4", 5.00, 15.00),
-    ("gpt-5", 5.00, 15.00),
     ("o4-mini", 1.10, 4.40),
+    ("o3-pro", 20.00, 80.00),
+    ("o3-mini", 1.10, 4.40),
     ("o3", 2.00, 8.00),
-    ("claude-haiku", 0.80, 4.00),
+    # --- Anthropic ---
+    ("claude-fable", 10.00, 50.00),
+    ("claude-mythos", 10.00, 50.00),
+    ("claude-opus-4-1", 15.00, 75.00),
+    ("claude-opus", 5.00, 25.00),  # Opus 4.5 through Opus 5
+    # Sonnet 5 is on introductory $2/$10 until 2026-08-31, then $3/$15 like Sonnet 4.x.
     ("claude-sonnet", 3.00, 15.00),
-    ("claude-opus", 15.00, 75.00),
-    ("claude-3-5", 3.00, 15.00),
+    ("claude-haiku", 1.00, 5.00),
+    ("claude-3-7-sonnet", 3.00, 15.00),
+    ("claude-3-5-sonnet", 3.00, 15.00),
+    ("claude-3-5-haiku", 0.80, 4.00),
+    ("claude-3-haiku", 0.25, 1.25),
+    # --- Google ---
+    ("gemini-3.6-flash", 1.50, 7.50),
+    ("gemini-3.5-flash-lite", 0.30, 2.50),
+    ("gemini-3.5-flash", 1.50, 9.00),
+    ("gemini-3.1-flash-lite", 0.25, 1.50),
+    ("gemini-3.1-pro", 2.00, 12.00),
+    ("gemini-3-flash", 0.50, 3.00),
+    ("gemini-3-pro", 2.00, 12.00),
+    ("gemini-2.5-flash-lite", 0.10, 0.40),
+    ("gemini-2.5-flash", 0.30, 2.50),
+    ("gemini-2.5-pro", 1.25, 10.00),
+    ("gemini-2.0-flash-lite", 0.075, 0.30),
+    ("gemini-2.0-flash", 0.10, 0.40),
     ("gemini-1.5-flash", 0.075, 0.30),
     ("gemini-1.5-pro", 1.25, 5.00),
-    ("gemini", 0.30, 1.20),
+    ("gemini", 0.30, 2.50),
 ]
-_DEFAULT_PRICE = (1.00, 3.00)
+_DEFAULT_PRICE = (1.50, 7.50)
 
 # Tool-name substrings that indicate a mutating ("write") action; else "read".
 _WRITE_HINTS = (

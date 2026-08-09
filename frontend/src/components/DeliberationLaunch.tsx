@@ -21,9 +21,13 @@ interface Option {
   model: string;
 }
 
-/** Rough per-call cost used only for the up-front estimate. */
+/**
+ * Rough per-call cost used only for the up-front estimate. A panel turn is ~4k input +
+ * ~1k output tokens, which at 2026 mid-tier list rates (~$3/1M in, ~$15/1M out) lands
+ * near $0.03 per call. Frontier models cost more, small models less.
+ */
 function estimateCost(calls: number): string {
-  return `$${(calls * 0.025).toFixed(2)}`;
+  return `$${(calls * 0.03).toFixed(2)}`;
 }
 
 /**
