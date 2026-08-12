@@ -316,11 +316,22 @@ def _numbered_canvas(footer_left: str, font: str, margin: float = _PAGE_MARGIN):
 
 
 def _accent_card(text_flowables: list, width: float, bg: str, accent: str):
-    """A tinted block with a coloured bar down its left edge."""
+    """A tinted block with a coloured bar down its left edge.
+
+    ``splitInRow`` lets the single row break across pages: a card holding a prompt longer
+    than one page is otherwise taller than the frame, and reportlab aborts the whole
+    export with a LayoutError.
+    """
     from reportlab.lib import colors
     from reportlab.platypus import Table, TableStyle
 
-    tbl = Table([["", text_flowables]], colWidths=[3.5, width - 3.5], hAlign="LEFT")
+    tbl = Table(
+        [["", text_flowables]],
+        colWidths=[3.5, width - 3.5],
+        hAlign="LEFT",
+        splitByRow=1,
+        splitInRow=1,
+    )
     tbl.setStyle(
         TableStyle(
             [

@@ -1086,7 +1086,13 @@ def markdown_pdf_flowables(
                     x0 = 1
                     widths = [indent] + widths
                     data = [[""] + row for row in data]
-                tbl = Table(data, colWidths=widths, hAlign="LEFT", repeatRows=1)
+                # ``splitInRow`` lets a row taller than the page break across pages;
+                # without it reportlab raises LayoutError and the export fails outright.
+                tbl = Table(
+                    data, colWidths=widths, hAlign="LEFT", repeatRows=1,
+                    splitByRow=1, splitInRow=1,
+                )
+
                 tbl.setStyle(
                     TableStyle(
                         [
