@@ -12,7 +12,7 @@
   "dependencies": {
     "@tanstack/react-query": "^5.51.1",
     "highlight.js": "^11.10.0",
-    "mermaid": "^11.2.0",
+    "mermaid": "^11.16.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^9.0.1",
@@ -31,6 +31,6 @@
     "vite": "^8.1.5"
   },
   "overrides": {
-    "dompurify": "^3.4.12"
+    "dompurify": "^3.4.13"
   }
 }
