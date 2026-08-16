@@ -189,6 +189,10 @@ scoping · 🛡️ SSRF-guarded fetch · 🏠 runs entirely on your machine (Doc
 All captured live against a real multi-lane session — nothing staged or mocked up. The blue
 dot is the mouse pointer.
 
+<img src="docs/assets/gif/full-council-deliberation-under-5mb.gif" alt="A full council deliberation progressing from question setup through blind drafts, anonymous peer review, convergence checks, synthesis and the final minority report" width="100%">
+
+**Full council deliberation** — convene multiple models for blind drafts, peer review and convergence checks, then inspect the synthesized answer and minority report.
+
 <img src="docs/assets/gif/compare-diff.gif" alt="Four finished model answers scrolling side-by-side, then switching to Diff view which highlights where the models agree and where they differ" width="100%">
 
 **Compare & diff** — read all four lanes side-by-side, then flip to **Diff** to see where the models agree and where they part ways.
