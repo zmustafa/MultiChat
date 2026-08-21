@@ -215,6 +215,97 @@ _GEN_MIME = {
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "pdf": "application/pdf",
 }
+_FILE_GENERATOR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("generate_pptx", re.compile(r"\b(power\s*point|pptx|slide deck|presentation)\b", re.I)),
+    ("generate_docx", re.compile(r"\b(word document|word doc|docx)\b", re.I)),
+    ("generate_xlsx", re.compile(r"\b(excel|xlsx|spreadsheet)\b", re.I)),
+    ("generate_pdf", re.compile(r"\bpdf\b", re.I)),
+)
+_GENERATOR_EXTENSIONS = {
+    "generate_pptx": "pptx",
+    "generate_docx": "docx",
+    "generate_xlsx": "xlsx",
+    "generate_pdf": "pdf",
+}
+
+
+def _message_text(message: ChatMessage) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(part.get("text") or "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return ""
+
+
+def _requested_file_generator(message: ChatMessage) -> str | None:
+    text = _message_text(message)
+    for generator, pattern in _FILE_GENERATOR_PATTERNS:
+        if pattern.search(text):
+            return generator
+    return None
+
+
+def _tool_created_requested_file(
+    tool_call_rows: list[tuple[str, dict, Any]], generator: str | None
+) -> bool:
+    if not generator:
+        return True
+    extension = _GENERATOR_EXTENSIONS[generator]
+    suffix = f".{extension}"
+    for name, _args, result in tool_call_rows:
+        if name != generator:
+            continue
+        text = str((result or {}).get("result") or "")
+        if any(
+            match.group(1).lower().endswith(suffix)
+            for match in re.finditer(r"\[[^\]]+\]\((/api/files/[^)\s]+)\)", text)
+        ):
+            return True
+    return False
+
+
+def _reconcile_generated_links(
+    text: str, real_links: list[tuple[str, str]]
+) -> tuple[str, list[tuple[str, str]]]:
+    """Replace unverified file links and return real links omitted by the model."""
+    real_urls = [url for _label, url in real_links]
+    unused_urls = list(real_urls)
+
+    def _take_replacement(url: str) -> str | None:
+        path = url.split("?", 1)[0]
+        extension_match = re.search(r"\.([a-z0-9]+)$", path, re.I)
+        if extension_match:
+            extension = extension_match.group(1).lower()
+            for candidate in unused_urls:
+                if candidate.split("?", 1)[0].lower().endswith(f".{extension}"):
+                    unused_urls.remove(candidate)
+                    return candidate
+            return None
+        if unused_urls:
+            return unused_urls.pop(0)
+        return None
+
+    def _fix_link(match: "re.Match[str]") -> str:
+        label, url = match.group(1), match.group(2)
+        if url in real_urls:
+            if url in unused_urls:
+                unused_urls.remove(url)
+            return match.group(0)
+        is_file_link = url.startswith("/api/files/")
+        looks_like_download = "download" in label.lower() or "\U0001F4E5" in label
+        if is_file_link or looks_like_download:
+            replacement = _take_replacement(url)
+            return f"[{label}]({replacement})" if replacement else label
+        return match.group(0)
+
+    fixed = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", _fix_link, text)
+    missing = [(label, url) for label, url in real_links if url not in fixed]
+    return fixed, missing
 
 
 def _record_generated_files(db: DbSession, session: ChatSession, text: str) -> None:
@@ -468,6 +559,8 @@ async def run_lane(
         prompt_tokens = 0
         completion_tokens = 0
         iters = 0
+        requested_generator = _requested_file_generator(user_message)
+        artifact_repair_attempts = 0
         _call_cache: dict[str, tuple] = {}
         _gen_count = {"n": 0}
         while True:
@@ -505,7 +598,45 @@ async def run_lane(
                     completion_tokens += ev.completion_tokens
             if cancel.is_set():
                 break
-            if not requested_calls or iters > settings.MAX_TOOL_ITERS:
+            if not requested_calls:
+                requested_file_created = _tool_created_requested_file(
+                    tool_call_rows, requested_generator
+                )
+                matching_tool = next(
+                    (spec for spec in tool_specs if spec.name == requested_generator),
+                    None,
+                )
+                if (
+                    not requested_file_created
+                    and matching_tool is not None
+                    and artifact_repair_attempts < 2
+                    and iters <= settings.MAX_TOOL_ITERS
+                ):
+                    artifact_repair_attempts += 1
+                    if iter_text.strip():
+                        messages.append({"role": "assistant", "content": iter_text})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "The current request explicitly requires a downloadable "
+                                f"{_GENERATOR_EXTENSIONS[requested_generator].upper()} file, "
+                                "but no real file has been created. Call the available "
+                                f"{requested_generator} tool now. Do not invent, reuse, or "
+                                "write an /api/files/ URL yourself; only the tool result can "
+                                "provide a valid download link."
+                            ),
+                        }
+                    )
+                    tool_specs = [matching_tool]
+                    full_text = ""
+                    _progress[(session_id, lane_id)] = {
+                        "turn_id": turn_id,
+                        "text": "",
+                    }
+                    continue
+                break
+            if iters > settings.MAX_TOOL_ITERS:
                 break
             # Append the assistant's tool-call turn in native OpenAI format so the
             # follow-up call has proper context (matched by tool_call_id).
@@ -576,7 +707,7 @@ async def run_lane(
                             return call, cached[0], cached[1], "ok"
                     try:
                         res = await tool.run(call_args, ctx)
-                        if is_generate:
+                        if is_generate and "/api/files/" in res.content:
                             _gen_count["n"] += 1
                         if cache_key is not None:
                             _call_cache[cache_key] = (res.content, res.citations)
@@ -677,36 +808,21 @@ async def run_lane(
                     _seen_urls.add(url)
                     real_links.append((label, url))
 
-        if real_links:
-            # (a) Rewrite fabricated download links — markdown links whose text looks like
-            # a download but whose URL is not a real /api/files/ link — to the real URLs,
-            # consumed in order.
-            real_urls = [u for _l, u in real_links]
-            _consumed = {"n": 0}
+        full_text, missing_links = _reconcile_generated_links(full_text, real_links)
+        if missing_links:
+            links = [f"[{label}]({url})" for label, url in missing_links]
+            addition = ("\n\n" if full_text.strip() else "") + (
+                "**Generated file(s):**\n\n" + "\n\n".join(links)
+            )
+            full_text += addition
+            await queue.put(sse("chunk", {"lane_id": lane_id, "delta": addition}))
 
-            def _fix_link(m: "re.Match[str]") -> str:
-                text, url = m.group(1), m.group(2)
-                if url.startswith("/api/files/"):
-                    return m.group(0)
-                looks_like_download = "download" in text.lower() or "\U0001F4E5" in text
-                if looks_like_download and _consumed["n"] < len(real_urls):
-                    new_url = real_urls[_consumed["n"]]
-                    _consumed["n"] += 1
-                    return f"[{text}]({new_url})"
-                return m.group(0)
-
-            fixed = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", _fix_link, full_text)
-            if fixed != full_text:
-                full_text = fixed
-
-            # (b) Append any real links the model omitted entirely.
-            if "/api/files/" not in full_text:
-                links = [f"[{label}]({url})" for label, url in real_links]
-                addition = ("\n\n" if full_text.strip() else "") + (
-                    "**Generated file(s):**\n\n" + "\n\n".join(links)
-                )
-                full_text += addition
-                await queue.put(sse("chunk", {"lane_id": lane_id, "delta": addition}))
+        if not _tool_created_requested_file(tool_call_rows, requested_generator):
+            notice = (
+                "\n\n" if full_text.strip() else ""
+            ) + "The requested downloadable file could not be created. No download was produced."
+            full_text += notice
+            await queue.put(sse("chunk", {"lane_id": lane_id, "delta": notice}))
 
         latency_ms = int((time.monotonic() - started) * 1000)
         usage = {
