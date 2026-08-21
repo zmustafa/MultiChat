@@ -11,7 +11,8 @@ class Settings(BaseSettings):
     APP_ENCRYPTION_KEY: str = ""
     JWT_SECRET: str = "change-me"
     JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRE_HOURS: int = 24
+    # 30 days: there is no refresh token, so a short expiry logs the user out mid-session.
+    JWT_EXPIRE_HOURS: int = 24 * 30
     DATABASE_URL: str = "sqlite:///./chatbot.db"
     FRONTEND_ORIGIN: str = "http://localhost:5000"
     UPLOAD_DIR: str = "./uploads"

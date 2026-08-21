@@ -169,8 +169,9 @@ not `403`, to avoid leaking existence.
 ## 7. Auth & secrets
 
 - **Passwords:** bcrypt (passlib).
-- **Sessions:** JWT bearer tokens (24h). A weak or absent `JWT_SECRET` is replaced at
-  startup with a generated secret persisted outside the repo (see `security.py`).
+- **Sessions:** JWT bearer tokens (30 days by default, `JWT_EXPIRE_HOURS`). A weak or
+  absent `JWT_SECRET` is replaced at startup with a generated secret persisted outside the
+  repo (see `security.py`).
 - **Provider/tool secrets:** encrypted at rest with Fernet (`crypto.py`), keyed by
   `APP_ENCRYPTION_KEY`. Secrets are never returned to the browser — responses expose only
   a mask and a `has_key` flag.

@@ -580,9 +580,10 @@ somewhere untrusted users can reach.
 
 - **Secrets.** Provider API keys and tool secrets are **Fernet-encrypted at rest** and
   never returned in plaintext (masked + `has_key`). The browser never holds a key.
-- **Auth.** Passwords are bcrypt-hashed; access is JWT bearer (24h). Every data route is
-  auth-scoped to the owner (cross-user access → 404). A weak/absent `JWT_SECRET` is
-  auto-replaced at startup with a generated one persisted outside the repo.
+- **Auth.** Passwords are bcrypt-hashed; access is JWT bearer (30 days by default, set
+  `JWT_EXPIRE_HOURS` to change it). Every data route is auth-scoped to the owner
+  (cross-user access → 404). A weak/absent `JWT_SECRET` is auto-replaced at startup with
+  a generated one persisted outside the repo.
 - **Egress.** `fetch_url` / `web_search` block private/loopback/link-local addresses and
   cap response size.
 - **Imports.** Backup/restore rejects path-traversal (Zip-Slip) member names.
