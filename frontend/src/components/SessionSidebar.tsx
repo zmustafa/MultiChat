@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate } from "react-router";
 import { asUtcDate } from "../api/client";
 import type { Persona, SearchHit, SessionListItem } from "../api/types";
-import { searchSessions, useFolderMutations, useFolders, useUserSettings } from "../hooks/useExtras";
+import { searchSessions, useFolderMutations, useFolders } from "../hooks/useExtras";
 import { useDismiss } from "../hooks/useDismiss";
 import { useSessionMutations } from "../hooks/useSessions";
 
@@ -81,22 +81,15 @@ export function SessionSidebar({
   const [draft, setDraft] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const navigate = useNavigate();
-  const { data: userSettings } = useUserSettings();
 
   // A persona either opens a chat or opens a panel; they behave differently enough to
   // deserve separate sections in the menu.
   const deliberationPersonas = personas.filter((p) => p.deliberation);
   const chatPersonas = personas.filter((p) => !p.deliberation);
 
-  // "New chat" either launches the default persona directly (when the user opted into that
-  // in Settings → General) or opens the persona picker.
-  const defaultPersona = chatPersonas.find((p) => p.is_default);
-  const autoDefault =
-    !!userSettings?.new_chat_use_default_persona && !!defaultPersona;
-  const handleNewChat = () => {
-    if (autoDefault) onNew(defaultPersona);
-    else setMenuOpen((o) => !o);
-  };
+  // "New chat" goes to the home screen, where the prompt and the persona are chosen
+  // together. The ▾ caret stays a shortcut straight into a specific persona.
+  const handleNewChat = () => navigate("/");
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchHit[]>([]);
   const [showArchived, setShowArchived] = useState(false);

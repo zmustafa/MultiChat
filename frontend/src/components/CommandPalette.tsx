@@ -49,7 +49,7 @@ export function CommandPalette({
 
   const commands: Command[] = useMemo(() => {
     const base: Command[] = [
-      { id: "new", label: "New topic", hint: "blank", run: () => { onNew(); onClose(); } },
+      { id: "new", label: "New chat", hint: "home", run: () => { navigate("/"); onClose(); } },
       ...personas.map((p) => ({
         id: `persona-${p.id}`,
         label: `New topic — ${p.name}`,

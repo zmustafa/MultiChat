@@ -66,7 +66,7 @@ export function SidebarNav() {
           ⏵
         </button>
         <button
-          onClick={() => newTopic(personas.find((p) => p.is_default))}
+          onClick={() => nav("/")}
           title="New chat"
           className="rounded p-1.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
         >

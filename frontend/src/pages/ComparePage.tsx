@@ -16,6 +16,7 @@ import { JudgePanel } from "../components/JudgePanel";
 import { LaneComposer } from "../components/LaneComposer";
 import type { QueuedMessage } from "../components/LaneComposer";
 import { ModelPicker } from "../components/ModelPicker";
+import { NewChatHome } from "../components/NewChatHome";
 import { SessionSidebar } from "../components/SessionSidebar";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useAuth } from "../auth/AuthContext";
@@ -26,9 +27,10 @@ import { usePersonas, usePersonaMutations } from "../hooks/usePersonas";
 import { useProviders } from "../hooks/useProviders";
 import { useTheme } from "../hooks/useTheme";
 import { seedLaneCollapse } from "../utils/laneCollapse";
-import { forgetLast, readLast, rememberLast } from "../utils/lastLocation";
+import { forgetLast, rememberLast } from "../utils/lastLocation";
 import { collectDiagrams } from "../utils/messagePdf";
 import { resolvePersonaLanes } from "../utils/personaLanes";
+import { startersFor } from "../utils/starters";
 import {
   useActiveSessions,
   useSession,
@@ -48,19 +50,6 @@ const ALL_TOOLS = [
   "generate_xlsx",
   "generate_pdf",
 ];
-
-/** Offered under the composer while a topic has no turns yet, so an empty grid still
- *  shows what this screen is for. Clicking one fills the box; you still press Send. */
-const STARTER_PROMPTS = [
-  "Explain the trade-offs of event-driven vs request/response architecture.",
-  "Review this design for security risks and rank them by severity.",
-  "Draft a one-page summary I can send to a non-technical stakeholder.",
-];
-
-/** A topic with a system prompt (one started from a persona, typically) leads with a
- *  prompt that makes each lane introduce itself in that role. */
-const PERSONA_STARTER =
-  "Based on your instructions, what are you set up to help me with?";
 
 /** Queued messages live per chat in localStorage so they survive navigating away. */
 const queueStorageKey = (sessionId: string) => `multichat_queue:${sessionId}`;
@@ -118,7 +107,7 @@ export function ComparePage() {
   useEffect(() => {
     const topic =
       session?.title ?? sessions.find(({ id }) => id === activeId)?.title;
-    document.title = activeId ? `Chat - ${topic ?? "New topic"}` : "MultiChat - Chat";
+    document.title = activeId ? `Chat - ${topic ?? "New topic"}` : "MultiChat - New chat";
 
     return () => {
       document.title = "MultiChat - Chat";
@@ -267,15 +256,6 @@ export function ComparePage() {
     if (!runId || runId === "new") return;
     if (sessions.some((s) => s.run_id === runId && !s.trashed)) rememberLast(`/d/${runId}`);
   }, [runId, sessions]);
-
-  // When landing on "/" with nothing selected, restore the last-opened conversation
-  // (chat or deliberation) so its permanent link is reflected in the URL. A
-  // deliberation (/d/:runId) is its own destination, so don't yank the user out of it.
-  useEffect(() => {
-    if (sessionId || runId) return;
-    const last = readLast();
-    if (last) nav(last, { replace: true });
-  }, [sessionId, runId, nav]);
 
   const refresh = () => {
     if (activeId) qc.invalidateQueries({ queryKey: ["session", activeId] });
@@ -799,27 +779,70 @@ export function ComparePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, streaming, activeId, personas]);
 
-  async function newTopic(persona?: Persona) {
-    if (persona) {
-      const lanes = resolvePersonaLanes(persona, providers);
-      const created = await sm.create.mutateAsync({
-        title: persona.name,
-        system_prompt: persona.system_prompt || undefined,
-        tools_enabled: persona.tools_enabled,
-        lanes: lanes.map((l) => ({
-          provider_id: l.provider_id,
-          model: l.model,
-          role: l.role,
-        })),
-      });
-      seedLaneCollapse(
-        created.lanes.map((l) => l.id),
-        lanes.map((l) => l.collapsed)
-      );
-      setActiveId(created.id);
+  // A chat started from the home screen is created and sent in one action, but the send
+  // has to wait for the new chat's lanes to arrive — broadcasting before then reaches
+  // nothing.
+  const pendingSendRef = useRef<{
+    sessionId: string;
+    content: string;
+    attachmentIds: string[];
+  } | null>(null);
+  useEffect(() => {
+    const pending = pendingSendRef.current;
+    if (!pending) return;
+    if (pending.sessionId !== activeId) {
+      // Moved on before the chat was ready; don't fire this prompt into an unrelated one.
+      if (activeId) pendingSendRef.current = null;
       return;
     }
-    const created = await sm.create.mutateAsync({ title: "New topic", lanes: [] });
+    if (session?.id !== activeId) return;
+    if (!session.lanes.some((l) => l.role === "responder")) return;
+    pendingSendRef.current = null;
+    broadcast(pending.content, pending.attachmentIds);
+  }, [activeId, session, broadcast]);
+
+  // Creating and opening are separate so a caller can put things in place (a first
+  // prompt, a draft) before the new chat renders.
+  async function createTopic(persona?: Persona) {
+    if (!persona)
+      return sm.create.mutateAsync({ title: "New topic", lanes: [] });
+    const lanes = resolvePersonaLanes(persona, providers);
+    const created = await sm.create.mutateAsync({
+      title: persona.name,
+      system_prompt: persona.system_prompt || undefined,
+      tools_enabled: persona.tools_enabled,
+      lanes: lanes.map((l) => ({
+        provider_id: l.provider_id,
+        model: l.model,
+        role: l.role,
+      })),
+    });
+    seedLaneCollapse(
+      created.lanes.map((l) => l.id),
+      lanes.map((l) => l.collapsed)
+    );
+    return created;
+  }
+
+  async function newTopic(persona?: Persona) {
+    const created = await createTopic(persona);
+    setActiveId(created.id);
+  }
+
+  /** Home screen: create the chat and send its first prompt as one action. */
+  async function startFromHome(
+    content: string,
+    attachmentIds: string[],
+    persona: Persona | null,
+  ) {
+    const created = await createTopic(persona ?? undefined);
+    if (persona) {
+      pendingSendRef.current = { sessionId: created.id, content, attachmentIds };
+    } else {
+      // A blank topic has no lanes to answer, so the draft is handed to the composer
+      // rather than broadcast into nothing.
+      setEditDraft({ text: content, ts: Date.now() });
+    }
     setActiveId(created.id);
   }
 
@@ -998,7 +1021,7 @@ export function ComparePage() {
         ⏵
       </button>
       <button
-        onClick={() => newTopic()}
+        onClick={() => nav("/")}
         title="New chat"
         className="rounded p-1.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
       >
@@ -1117,6 +1140,17 @@ export function ComparePage() {
         ) : (
           <DeliberationView runId={runId} />
         )}
+        {palette}
+      </div>
+    );
+
+  // Nothing open: the home screen owns "/" — one prompt box and the persona that will
+  // answer it. The chat itself is created by the first send.
+  if (!activeId)
+    return (
+      <div className="flex h-full bg-white dark:bg-gray-950">
+        {sidebar}
+        <NewChatHome onStart={startFromHome} onSelectSession={setActiveId} />
         {palette}
       </div>
     );
@@ -1686,9 +1720,7 @@ export function ComparePage() {
             autoFocusKey={activeId ?? undefined}
             starters={
               session.turns.length === 0
-                ? session.system_prompt?.trim()
-                  ? [PERSONA_STARTER, ...STARTER_PROMPTS.slice(0, 2)]
-                  : STARTER_PROMPTS
+                ? startersFor(session.system_prompt)
                 : undefined
             }
             leftAccessory={

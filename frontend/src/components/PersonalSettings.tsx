@@ -56,7 +56,8 @@ function NewChatBehavior() {
       <div className="border-b border-gray-200 px-5 py-4 dark:border-gray-700">
         <h2 className="font-medium">New chat</h2>
         <p className="mt-0.5 text-xs text-gray-500">
-          Choose what happens when you click <span className="font-medium">New chat</span>.
+          Choose which persona the <span className="font-medium">New chat</span> screen
+          starts on.
         </p>
       </div>
       <div className="p-5">
@@ -71,11 +72,11 @@ function NewChatBehavior() {
           />
           <span className="text-sm">
             <span className="block font-medium">
-              Auto-start the default persona
+              Preselect the default persona
             </span>
             <span className="block text-xs text-gray-500">
-              When on, clicking New chat immediately launches your default persona. When
-              off, it opens the persona picker so you can choose (or start blank).
+              When on, a new chat starts on your default persona instead of a blank
+              topic. Either way the last persona you picked wins next time.
             </span>
           </span>
         </label>
