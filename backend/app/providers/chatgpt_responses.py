@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 
 from ..config import settings
+from . import http_client
 from .base import LLMProvider, StreamEvent, ToolCallRequest, ToolSpec
 
 DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex"
@@ -149,63 +150,63 @@ class ChatGPTResponsesProvider(LLMProvider):
         _timeout = httpx.Timeout(settings.LLM_REQUEST_TIMEOUT, connect=15.0)
 
         yield StreamEvent(type="status", phase="connecting", text=f"Connecting to {provider_name} · {self._model}…")
-        async with httpx.AsyncClient(timeout=_timeout) as client:
-            async with client.stream("POST", url, json=payload, headers=self._headers()) as resp:
-                if resp.status_code >= 400:
-                    body = (await resp.aread()).decode("utf-8", "replace")
-                    raise RuntimeError(f"{provider_name} API error {resp.status_code}: {body[:500]}")
-                yield StreamEvent(type="status", phase="request_sent", text="Request sent · awaiting response…")
-                first = True
-                async for line in resp.aiter_lines():
-                    if not line:
-                        continue
-                    if line.startswith("event:"):
-                        current_event = line[len("event:"):].strip()
-                        continue
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[len("data:"):].strip()
-                    if not data or data == "[DONE]":
-                        continue
-                    try:
-                        evt = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-                    etype = current_event or (evt.get("type") if isinstance(evt, dict) else "")
-                    if etype == "response.output_text.delta":
-                        if first:
-                            first = False
-                            yield StreamEvent(type="status", phase="response", text="Response received · generating…")
-                        yield StreamEvent(type="token", text=evt.get("delta", ""))
-                    elif etype == "response.output_item.added":
-                        item = evt.get("item", {})
-                        if item.get("type") == "function_call":
-                            fn_acc[item.get("id", "")] = {
-                                "call_id": item.get("call_id", ""),
-                                "name": item.get("name", ""),
-                                "args": item.get("arguments", "") or "",
-                            }
-                    elif etype == "response.function_call_arguments.delta":
-                        entry = fn_acc.get(evt.get("item_id", ""))
-                        if entry:
-                            entry["args"] += evt.get("delta", "")
-                    elif etype == "response.output_item.done":
-                        # Authoritative for Copilot: it obfuscates/rotates item_id on
-                        # every argument delta, so delta-accumulation never matches.
-                        # This event carries the complete arguments + a stable call_id.
-                        item = evt.get("item", {})
-                        if item.get("type") == "function_call":
-                            cid = item.get("call_id") or item.get("id", "")
-                            completed_calls[cid] = {
-                                "call_id": cid,
-                                "name": item.get("name", ""),
-                                "args": item.get("arguments", "") or "",
-                            }
-                    elif etype in ("response.error", "error"):
-                        msg = (evt.get("error") or {}).get("message") if isinstance(evt, dict) else None
-                        raise RuntimeError(f"{provider_name} error: {msg or data[:200]}")
-                    elif etype == "response.completed":
-                        break
+        client = await http_client.get_client(_timeout)
+        async with client.stream("POST", url, json=payload, headers=self._headers()) as resp:
+            if resp.status_code >= 400:
+                body = (await resp.aread()).decode("utf-8", "replace")
+                raise RuntimeError(f"{provider_name} API error {resp.status_code}: {body[:500]}")
+            yield StreamEvent(type="status", phase="request_sent", text="Request sent · awaiting response…")
+            first = True
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                if line.startswith("event:"):
+                    current_event = line[len("event:"):].strip()
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    evt = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                etype = current_event or (evt.get("type") if isinstance(evt, dict) else "")
+                if etype == "response.output_text.delta":
+                    if first:
+                        first = False
+                        yield StreamEvent(type="status", phase="response", text="Response received · generating…")
+                    yield StreamEvent(type="token", text=evt.get("delta", ""))
+                elif etype == "response.output_item.added":
+                    item = evt.get("item", {})
+                    if item.get("type") == "function_call":
+                        fn_acc[item.get("id", "")] = {
+                            "call_id": item.get("call_id", ""),
+                            "name": item.get("name", ""),
+                            "args": item.get("arguments", "") or "",
+                        }
+                elif etype == "response.function_call_arguments.delta":
+                    entry = fn_acc.get(evt.get("item_id", ""))
+                    if entry:
+                        entry["args"] += evt.get("delta", "")
+                elif etype == "response.output_item.done":
+                    # Authoritative for Copilot: it obfuscates/rotates item_id on
+                    # every argument delta, so delta-accumulation never matches.
+                    # This event carries the complete arguments + a stable call_id.
+                    item = evt.get("item", {})
+                    if item.get("type") == "function_call":
+                        cid = item.get("call_id") or item.get("id", "")
+                        completed_calls[cid] = {
+                            "call_id": cid,
+                            "name": item.get("name", ""),
+                            "args": item.get("arguments", "") or "",
+                        }
+                elif etype in ("response.error", "error"):
+                    msg = (evt.get("error") or {}).get("message") if isinstance(evt, dict) else None
+                    raise RuntimeError(f"{provider_name} error: {msg or data[:200]}")
+                elif etype == "response.completed":
+                    break
 
         if fn_acc or completed_calls:
             calls: list[ToolCallRequest] = []

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { memo, useMemo, useState } from "react";
 
 interface Cell {
   node: React.ReactNode;
@@ -160,7 +160,7 @@ async function renderTablePng(
  * Cell content keeps its markdown formatting (bold, code, links); sorting/filtering
  * uses the plain-text projection of each cell.
  */
-export function MarkdownTable({ children }: { children?: React.ReactNode }) {
+export const MarkdownTable = memo(function MarkdownTable({ children }: { children?: React.ReactNode }) {
   const { headers, rows } = useMemo(() => {
     const top = childElements(children, ["thead", "tbody"]);
     const thead = top.find((c) => c.type === "thead");
@@ -192,8 +192,8 @@ export function MarkdownTable({ children }: { children?: React.ReactNode }) {
       r = [...r].sort((a, b) => {
         const av = a[col]?.text ?? "";
         const bv = b[col]?.text ?? "";
-        const an = parseFloat(av.replace(/[^0-9.\-]/g, ""));
-        const bn = parseFloat(bv.replace(/[^0-9.\-]/g, ""));
+        const an = parseFloat(av.replace(/[^0-9.-]/g, ""));
+        const bn = parseFloat(bv.replace(/[^0-9.-]/g, ""));
         const numeric =
           av.trim() !== "" &&
           bv.trim() !== "" &&
@@ -421,4 +421,4 @@ export function MarkdownTable({ children }: { children?: React.ReactNode }) {
       </div>
     </div>
   );
-}
+});

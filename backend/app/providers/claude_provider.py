@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 from ..config import settings
+from . import http_client
 from .base import LLMProvider, StreamEvent, ToolCallRequest, ToolSpec
 
 DEFAULT_BASE_URL = "https://api.anthropic.com"
@@ -201,57 +202,57 @@ class ClaudeProvider(LLMProvider):
 
         _timeout = httpx.Timeout(settings.LLM_REQUEST_TIMEOUT, connect=15.0)
         yield StreamEvent(type="status", phase="connecting", text=f"Connecting to Claude · {self._model}…")
-        async with httpx.AsyncClient(timeout=_timeout) as client:
-            async with client.stream("POST", url, json=payload, headers=headers) as resp:
-                if resp.status_code >= 400:
-                    body = (await resp.aread()).decode("utf-8", "replace")
-                    raise RuntimeError(f"Claude API error {resp.status_code}: {body[:500]}")
-                yield StreamEvent(type="status", phase="request_sent", text="Request sent · awaiting response…")
+        client = await http_client.get_client(_timeout)
+        async with client.stream("POST", url, json=payload, headers=headers) as resp:
+            if resp.status_code >= 400:
+                body = (await resp.aread()).decode("utf-8", "replace")
+                raise RuntimeError(f"Claude API error {resp.status_code}: {body[:500]}")
+            yield StreamEvent(type="status", phase="request_sent", text="Request sent · awaiting response…")
 
-                first = True
-                async for line in resp.aiter_lines():
-                    if not line or not line.startswith("data:"):
-                        continue
-                    data = line[len("data:"):].strip()
-                    if not data:
-                        continue
-                    try:
-                        evt = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-                    if first:
-                        first = False
-                        yield StreamEvent(type="status", phase="response", text="Response received · generating…")
-                    etype = evt.get("type")
-                    if etype == "content_block_start":
-                        idx = evt.get("index", 0)
-                        cb = evt.get("content_block", {})
-                        blocks[idx] = {
-                            "type": cb.get("type"),
-                            "id": cb.get("id", ""),
-                            "name": cb.get("name", ""),
-                            "json": "",
-                            "text": "",
-                        }
-                    elif etype == "content_block_delta":
-                        idx = evt.get("index", 0)
-                        delta = evt.get("delta", {})
-                        blk = blocks.setdefault(idx, {"type": "text", "json": "", "text": ""})
-                        if delta.get("type") == "text_delta":
-                            text = delta.get("text", "")
-                            if text:
-                                blk["text"] += text
-                                yield StreamEvent(type="token", text=text)
-                        elif delta.get("type") == "input_json_delta":
-                            blk["json"] += delta.get("partial_json", "")
-                    elif etype == "message_delta":
-                        usage = evt.get("usage", {})
-                        completion_tokens = usage.get("output_tokens", completion_tokens)
-                        if (evt.get("delta") or {}).get("stop_reason") == "max_tokens":
-                            truncated = True
-                    elif etype == "error":
-                        msg = (evt.get("error") or {}).get("message", "unknown")
-                        raise RuntimeError(f"Claude error: {msg}")
+            first = True
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if not data:
+                    continue
+                try:
+                    evt = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                if first:
+                    first = False
+                    yield StreamEvent(type="status", phase="response", text="Response received · generating…")
+                etype = evt.get("type")
+                if etype == "content_block_start":
+                    idx = evt.get("index", 0)
+                    cb = evt.get("content_block", {})
+                    blocks[idx] = {
+                        "type": cb.get("type"),
+                        "id": cb.get("id", ""),
+                        "name": cb.get("name", ""),
+                        "json": "",
+                        "text": "",
+                    }
+                elif etype == "content_block_delta":
+                    idx = evt.get("index", 0)
+                    delta = evt.get("delta", {})
+                    blk = blocks.setdefault(idx, {"type": "text", "json": "", "text": ""})
+                    if delta.get("type") == "text_delta":
+                        text = delta.get("text", "")
+                        if text:
+                            blk["text"] += text
+                            yield StreamEvent(type="token", text=text)
+                    elif delta.get("type") == "input_json_delta":
+                        blk["json"] += delta.get("partial_json", "")
+                elif etype == "message_delta":
+                    usage = evt.get("usage", {})
+                    completion_tokens = usage.get("output_tokens", completion_tokens)
+                    if (evt.get("delta") or {}).get("stop_reason") == "max_tokens":
+                        truncated = True
+                elif etype == "error":
+                    msg = (evt.get("error") or {}).get("message", "unknown")
+                    raise RuntimeError(f"Claude error: {msg}")
 
         calls: list[ToolCallRequest] = []
         for _idx, blk in sorted(blocks.items()):
@@ -279,11 +280,11 @@ class ClaudeProvider(LLMProvider):
         headers = self._auth_headers()
         headers.pop("accept", None)
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
-                resp = await client.get(f"{self._base_url}/v1/models", headers=headers)
-                if resp.status_code >= 400:
-                    return list(CLAUDE_FALLBACK_MODELS)
-                return [m["id"] for m in resp.json().get("data", [])] or list(CLAUDE_FALLBACK_MODELS)
+            client = await http_client.get_client(20.0)
+            resp = await client.get(f"{self._base_url}/v1/models", headers=headers)
+            if resp.status_code >= 400:
+                return list(CLAUDE_FALLBACK_MODELS)
+            return [m["id"] for m in resp.json().get("data", [])] or list(CLAUDE_FALLBACK_MODELS)
         except Exception:  # noqa: BLE001
             return list(CLAUDE_FALLBACK_MODELS)
 

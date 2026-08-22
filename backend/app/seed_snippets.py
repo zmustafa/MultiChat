@@ -14,7 +14,6 @@ from sqlalchemy.orm import Session as DbSession
 
 from .models import Snippet, User
 
-
 # ---------------------------------------------------------------------------
 # Catalog. Each entry ships to end users.
 # ---------------------------------------------------------------------------

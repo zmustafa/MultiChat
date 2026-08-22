@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from fastapi.responses import Response
@@ -21,7 +21,7 @@ def export_everything(
     """Download a ZIP backup of everything for the current user (settings, keys,
     providers, personas, sessions, files, …). The ZIP contains decrypted secrets."""
     blob = build_export(db, user)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     filename = f"multichat-backup-{stamp}.zip"
     return Response(
         content=blob,

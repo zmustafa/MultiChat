@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, memo } from "react";
 import { createPortal } from "react-dom";
 import type MermaidApi from "mermaid";
 
@@ -246,7 +246,7 @@ function flattenForeignObjects(clone: SVGSVGElement, live: SVGSVGElement) {
   });
 }
 
-export function Mermaid({ code }: { code: string }) {
+export const Mermaid = memo(function Mermaid({ code }: { code: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const dark = useIsDark();
   const [svg, setSvg] = useState<string>("");
@@ -399,7 +399,7 @@ export function Mermaid({ code }: { code: string }) {
       {expanded && <DiagramModal svg={svg} onClose={() => setExpanded(false)} />}
     </>
   );
-}
+});
 
 /** Full-screen diagram viewer with zoom (wheel / buttons) + pan (drag) + fit/reset. */
 function DiagramModal({ svg, onClose }: { svg: string; onClose: () => void }) {
@@ -415,7 +415,7 @@ function DiagramModal({ svg, onClose }: { svg: string; onClose: () => void }) {
   // The diagram's natural size comes from the SVG viewBox; mermaid SVGs use width="100%"
   // so they'd otherwise collapse/measure as 0 in the auto-sized modal box.
   const dims = (() => {
-    const m = /viewBox="[\d.\-]+ [\d.\-]+ ([\d.]+) ([\d.]+)"/.exec(svg);
+    const m = /viewBox="[\d.-]+ [\d.-]+ ([\d.]+) ([\d.]+)"/.exec(svg);
     return m ? { w: parseFloat(m[1]), h: parseFloat(m[2]) } : { w: 800, h: 600 };
   })();
 

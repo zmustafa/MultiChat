@@ -8,7 +8,9 @@ streaming, tool-call fragment accumulation and usage for us.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -80,6 +82,58 @@ _PROVIDER_NAMES = {
 }
 
 
+# A fresh AsyncOpenAI carries its own httpx connection pool, so building one per lane per
+# turn meant a new TLS handshake for every message (and the pools were never closed).
+# Clients are cached by everything that affects the connection; a rotated OAuth bearer
+# therefore yields a new entry and the stale one is evicted by the LRU.
+_MAX_CACHED_CLIENTS = 32
+_client_cache: OrderedDict[str, AsyncOpenAI | AsyncAzureOpenAI] = OrderedDict()
+
+
+def _client_key(parts: dict[str, Any]) -> str:
+    blob = json.dumps(parts, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def _cached_client(key: str, factory) -> AsyncOpenAI | AsyncAzureOpenAI:  # noqa: ANN001
+    existing = _client_cache.get(key)
+    if existing is not None:
+        _client_cache.move_to_end(key)
+        return existing
+    client = factory()
+    _client_cache[key] = client
+    while len(_client_cache) > _MAX_CACHED_CLIENTS:
+        _, evicted = _client_cache.popitem(last=False)
+        _schedule_close(evicted)
+    return client
+
+
+def _schedule_close(client: AsyncOpenAI | AsyncAzureOpenAI) -> None:
+    """Close an evicted client without blocking; a stream may still be draining it."""
+    import asyncio
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_safe_close(client))
+
+
+async def _safe_close(client: AsyncOpenAI | AsyncAzureOpenAI) -> None:
+    try:
+        await client.close()
+    except Exception:  # noqa: BLE001 - eviction must never surface to a request
+        pass
+
+
+async def close_cached_clients() -> None:
+    """Close and drop every pooled client (called on application shutdown)."""
+    clients = list(_client_cache.values())
+    _client_cache.clear()
+    for client in clients:
+        await _safe_close(client)
+
+
 class OpenAIProvider(LLMProvider):
     def __init__(
         self,
@@ -110,25 +164,42 @@ class OpenAIProvider(LLMProvider):
                 base_url = "http://localhost:11434/v1"
 
         if provider in ("azure_openai", "azure_foundry"):
-            self._client: AsyncOpenAI | AsyncAzureOpenAI = AsyncAzureOpenAI(
-                api_key=api_key or "",
-                azure_endpoint=base_url,
-                api_version=api_version or "2024-10-21",
-                default_headers=default_headers,
-                timeout=settings.LLM_REQUEST_TIMEOUT,
+            key = _client_key(
+                {
+                    "kind": "azure",
+                    "endpoint": base_url,
+                    "version": api_version or "2024-10-21",
+                    "auth": hashlib.sha256((api_key or "").encode()).hexdigest(),
+                    "headers": default_headers or {},
+                }
             )
-        elif base_url:
-            self._client = AsyncOpenAI(
-                api_key=api_key or "not-needed",
-                base_url=base_url,
-                default_headers=default_headers,
-                timeout=settings.LLM_REQUEST_TIMEOUT,
+            self._client: AsyncOpenAI | AsyncAzureOpenAI = _cached_client(
+                key,
+                lambda: AsyncAzureOpenAI(
+                    api_key=api_key or "",
+                    azure_endpoint=base_url,
+                    api_version=api_version or "2024-10-21",
+                    default_headers=default_headers,
+                    timeout=settings.LLM_REQUEST_TIMEOUT,
+                ),
             )
         else:
-            self._client = AsyncOpenAI(
-                api_key=api_key,
-                default_headers=default_headers,
-                timeout=settings.LLM_REQUEST_TIMEOUT,
+            key = _client_key(
+                {
+                    "kind": "openai",
+                    "base": base_url,
+                    "auth": hashlib.sha256((api_key or "").encode()).hexdigest(),
+                    "headers": default_headers or {},
+                }
+            )
+            self._client = _cached_client(
+                key,
+                lambda: AsyncOpenAI(
+                    api_key=api_key or "not-needed",
+                    default_headers=default_headers,
+                    timeout=settings.LLM_REQUEST_TIMEOUT,
+                    **({"base_url": base_url} if base_url else {}),
+                ),
             )
         self._responses_base_url = base_url.rstrip("/") or "https://api.openai.com/v1"
 

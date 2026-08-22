@@ -1,20 +1,50 @@
-import type { ReactElement } from "react";
+import { lazy, Suspense, type ReactElement } from "react";
 import { Navigate, Route, Routes } from "react-router";
 import { useAuth } from "./auth/AuthContext";
 import { useProviders } from "./hooks/useProviders";
 import { AppLayout } from "./components/AppLayout";
 import { DefaultPasswordPrompt } from "./components/DefaultPasswordPrompt";
-import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { ComparePage } from "./pages/ComparePage";
-import { BenchmarkPage } from "./pages/BenchmarkPage";
-import { EvalsPage } from "./pages/EvalsPage";
-import { GeneralSettingsPage } from "./pages/GeneralSettingsPage";
-import { SecuritySettingsPage } from "./pages/SecuritySettingsPage";
-import { IntegrationsPage } from "./pages/IntegrationsPage";
 import { LoginPage } from "./pages/LoginPage";
-import { PersonaLibraryPage } from "./pages/PersonaLibraryPage";
-import { SettingsPage } from "./pages/SettingsPage";
-import { SnippetLibraryPage } from "./pages/SnippetLibraryPage";
+
+// Secondary routes are loaded on demand: bundled eagerly they added the analytics,
+// evals, benchmark, persona, snippet, integrations and provider-settings pages to the
+// entry chunk that every chat session has to download before first paint.
+const AnalyticsPage = lazy(() =>
+  import("./pages/AnalyticsPage").then((m) => ({ default: m.AnalyticsPage })),
+);
+const BenchmarkPage = lazy(() =>
+  import("./pages/BenchmarkPage").then((m) => ({ default: m.BenchmarkPage })),
+);
+const EvalsPage = lazy(() =>
+  import("./pages/EvalsPage").then((m) => ({ default: m.EvalsPage })),
+);
+const GeneralSettingsPage = lazy(() =>
+  import("./pages/GeneralSettingsPage").then((m) => ({ default: m.GeneralSettingsPage })),
+);
+const SecuritySettingsPage = lazy(() =>
+  import("./pages/SecuritySettingsPage").then((m) => ({ default: m.SecuritySettingsPage })),
+);
+const IntegrationsPage = lazy(() =>
+  import("./pages/IntegrationsPage").then((m) => ({ default: m.IntegrationsPage })),
+);
+const PersonaLibraryPage = lazy(() =>
+  import("./pages/PersonaLibraryPage").then((m) => ({ default: m.PersonaLibraryPage })),
+);
+const SettingsPage = lazy(() =>
+  import("./pages/SettingsPage").then((m) => ({ default: m.SettingsPage })),
+);
+const SnippetLibraryPage = lazy(() =>
+  import("./pages/SnippetLibraryPage").then((m) => ({ default: m.SnippetLibraryPage })),
+);
+
+function PageFallback() {
+  return (
+    <div className="flex h-full items-center justify-center text-sm text-gray-500">
+      Loading…
+    </div>
+  );
+}
 
 function Protected({ children }: { children: ReactElement }) {
   const { user, loading } = useAuth();
@@ -51,6 +81,7 @@ export default function App() {
   return (
     <>
       <DefaultPasswordPrompt />
+      <Suspense fallback={<PageFallback />}>
       <Routes>
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
       <Route
@@ -157,6 +188,7 @@ export default function App() {
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+      </Suspense>
     </>
   );
 }

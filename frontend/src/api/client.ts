@@ -69,6 +69,45 @@ export interface SSEEvent {
 }
 
 /**
+ * Conditional GET. A chat transcript is refetched every time a lane finishes and is
+ * almost always unchanged, so we keep the last ETag + body per path and let the server
+ * answer 304 instead of re-sending hundreds of KB of markdown.
+ */
+const etagCache = new Map<string, { etag: string; body: unknown }>();
+
+export async function apiFetchCached<T>(path: string): Promise<T> {
+  const cached = etagCache.get(path);
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: authHeaders(
+      cached ? { "If-None-Match": cached.etag } : undefined,
+    ),
+  });
+  if (res.status === 304 && cached) return cached.body as T;
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      detail = body.detail || detail;
+    } catch {
+      /* ignore */
+    }
+    // A stale entry must not outlive a failed revalidation.
+    etagCache.delete(path);
+    throw new Error(detail);
+  }
+  const body = (await res.json()) as T;
+  const etag = res.headers.get("etag");
+  if (etag) etagCache.set(path, { etag, body });
+  else etagCache.delete(path);
+  return body;
+}
+
+/** Drop cached transcript bodies (called on sign-out so nothing leaks between users). */
+export function clearEtagCache(): void {
+  etagCache.clear();
+}
+
+/**
  * POST a request and consume an SSE stream, invoking onEvent for each parsed event.
  * Returns an AbortController so the caller can cancel.
  */

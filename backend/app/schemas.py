@@ -162,6 +162,9 @@ class ToolCallOut(BaseModel):
     citations_json: list | None
     status: str
     created_at: datetime
+    # True when result_json was shortened for the session payload; the full body is at
+    # GET /api/sessions/{sid}/tool-calls/{id}.
+    result_truncated: bool = False
 
 
 class LaneMessageOut(BaseModel):

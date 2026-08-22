@@ -25,11 +25,18 @@ engine = create_engine(
 )
 
 if settings.DATABASE_URL.startswith("sqlite"):
+    # journal_mode is a property of the database FILE, not of a connection, so setting it
+    # once per process is enough. With NullPool every request opens a fresh connection, so
+    # re-issuing it each time was a pure round trip.
+    _wal_set = False
 
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragmas(dbapi_conn, _rec):  # noqa: ANN001
+        global _wal_set
         cur = dbapi_conn.cursor()
-        cur.execute("PRAGMA journal_mode=WAL")
+        if not _wal_set:
+            cur.execute("PRAGMA journal_mode=WAL")
+            _wal_set = True
         cur.execute("PRAGMA synchronous=NORMAL")
         cur.execute("PRAGMA foreign_keys=ON")
         # Wait up to 30s for a write lock instead of failing/blocking indefinitely, so

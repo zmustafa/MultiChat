@@ -6,7 +6,7 @@ import hashlib
 import json
 import secrets
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session as DbSession
 
 from ..crypto import decrypt, encrypt
 from ..models import Provider
+from . import http_client
 
 # ----------------------------------------------------------------------------
 # Public client constants (per brief §6.9 / §6.10 / §6.11)
@@ -151,7 +152,7 @@ async def _mint_copilot_token(client_id: str, gh_token: str) -> tuple[str, str, 
     """
     last_status = 0
     last_text = ""
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with http_client.borrow(30) as client:
         for attempt in range(3):
             try:
                 resp = await client.get(
@@ -312,7 +313,7 @@ def _start_claude(provider: Provider, db: DbSession) -> dict[str, Any]:
 
 
 async def _start_copilot(provider: Provider, db: DbSession) -> dict[str, Any]:
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with http_client.borrow(30) as client:
         resp = await client.post(
             COPILOT["device_code"],
             headers={"Accept": "application/json"},
@@ -517,7 +518,7 @@ def _store_tokens(
 
 async def _exchange_chatgpt(provider: Provider, db: DbSession, code: str) -> None:
     flow = _pending[provider.id]
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with http_client.borrow(30) as client:
         resp = await client.post(
             CHATGPT["token"],
             headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -552,7 +553,7 @@ async def _exchange_claude(
     provider: Provider, db: DbSession, code: str, state: str
 ) -> None:
     flow = _pending[provider.id]
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with http_client.borrow(30) as client:
         resp = await client.post(
             CLAUDE["token"],
             headers={"Content-Type": "application/json"},
@@ -587,7 +588,7 @@ async def _poll_copilot(
     bo = _github_backoff.get(provider.id)
     if bo and now < bo["next_at"]:
         return False
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with http_client.borrow(30) as client:
         resp = await client.post(
             COPILOT["access_token"],
             headers={"Accept": "application/json"},
@@ -650,10 +651,10 @@ async def _refresh(provider: Provider, db: DbSession) -> None:
              "client_id": _client_id(provider, CHATGPT["client_id"])},
             {"Content-Type": "application/x-www-form-urlencoded"},
         )
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with http_client.borrow(30) as client:
             resp = await client.post(url, headers=headers, data=payload)
     else:  # claude
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with http_client.borrow(30) as client:
             resp = await client.post(
                 CLAUDE["token"],
                 headers={"Content-Type": "application/json"},

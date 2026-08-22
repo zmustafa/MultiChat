@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { apiFetch, streamSSE } from "../api/client";
 import type {
@@ -526,7 +526,8 @@ function StatusDot({ color, title }: { color: string; title: string }) {
 
 export function ProviderSettings() {
   const providersQuery = useProviders();
-  const providers = providersQuery.data ?? [];
+  // Stable identity: a fresh [] on each render would re-run every effect that depends on it.
+  const providers = useMemo(() => providersQuery.data ?? [], [providersQuery.data]);
   const { create, update, remove } = useProviderMutations();
   const [selected, setSelected] = useState<string | "new" | null>(null);
   const [form, setForm] = useState<FormState>(empty);

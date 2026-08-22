@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .base import ToolContext, ToolDef, ToolResult
 
@@ -14,7 +14,7 @@ class CurrentDateTool:
     )
 
     async def run(self, args: dict, ctx: ToolContext) -> ToolResult:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return ToolResult(
             content=now.strftime("%A, %d %B %Y, %H:%M UTC"), citations=None
         )

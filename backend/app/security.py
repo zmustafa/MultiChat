@@ -3,11 +3,11 @@ from __future__ import annotations
 import logging
 import os
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
+import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-import jwt
 from jwt import PyJWTError
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session as DbSession
@@ -97,7 +97,7 @@ def is_default_credentials(user) -> bool:
 
 
 def create_access_token(user_id: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(hours=settings.JWT_EXPIRE_HOURS)
+    expire = datetime.now(UTC) + timedelta(hours=settings.JWT_EXPIRE_HOURS)
     payload = {"sub": user_id, "exp": expire}
     return jwt.encode(payload, JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 

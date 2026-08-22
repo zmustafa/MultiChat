@@ -40,6 +40,10 @@ dist/
 Thumbs.db
 *.log
 
+# Server logs can carry stack traces and request details — ignore the whole directory,
+# not just *.log, so a differently-named file can never be published by accident.
+backend/logs/
+
 # ---- Local machine-specific scripts (auto-start, etc.) ----
 scripts/
 

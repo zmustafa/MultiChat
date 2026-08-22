@@ -496,19 +496,23 @@ export function DeliberationView({ runId }: { runId: string }) {
   const traces = live.traces.length ? live.traces : (run?.convergence ?? []);
   const metrics = live.metrics ?? run?.metrics ?? null;
   const vote = (run?.vote && "ranking" in run.vote ? (run.vote as VoteResult) : null);
-  const synthesis = live.synthesis?.answer
-    ? live.synthesis
-    : run?.synthesis
-      ? {
-          answer: run.synthesis,
-          minority_report: run.minority_report,
-          do_now: run.extraction?.do_now,
-          consider_later: run.extraction?.consider_later,
-          skip: run.extraction?.skip,
-          critique: run.synthesis_critique,
-          by: null,
-        }
-      : null;
+  const synthesis = useMemo(
+    () =>
+      live.synthesis?.answer
+        ? live.synthesis
+        : run?.synthesis
+          ? {
+              answer: run.synthesis,
+              minority_report: run.minority_report,
+              do_now: run.extraction?.do_now,
+              consider_later: run.extraction?.consider_later,
+              skip: run.extraction?.skip,
+              critique: run.synthesis_critique,
+              by: null,
+            }
+          : null,
+    [live.synthesis, run],
+  );
 
   const maxRound = Math.max(
     0,

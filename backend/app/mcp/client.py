@@ -167,7 +167,7 @@ class McpStdioClient:
         await asyncio.get_event_loop().run_in_executor(None, self._write, msg)
         try:
             return await asyncio.wait_for(fut, timeout=timeout)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             self._pending.pop(req_id, None)
             raise McpError(f"MCP '{method}' timed out. {self.stderr_tail(5)}") from exc
 

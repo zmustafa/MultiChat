@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 
@@ -20,6 +21,11 @@ router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 def _upload_dir() -> str:
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     return settings.UPLOAD_DIR
+
+
+def _write_file(path: str, data: bytes) -> None:
+    with open(path, "wb") as fh:
+        fh.write(data)
 
 
 @router.post("", response_model=list[AttachmentOut])
@@ -52,8 +58,10 @@ async def upload(
         ext = os.path.splitext(f.filename or "")[1] or (".png" if is_image else ".bin")
         stored_name = f"{att_id}{ext}"
         path = os.path.join(_upload_dir(), stored_name)
-        with open(path, "wb") as fh:
-            fh.write(data)
+        # Writing the file and parsing a document (pypdf / python-docx / openpyxl on up to
+        # 25 MB) are blocking and CPU-bound. Run them off the event loop or every in-flight
+        # SSE lane stops streaming for the duration of the upload.
+        await asyncio.to_thread(_write_file, path, data)
 
         if is_image:
             kind = "image"
@@ -62,7 +70,9 @@ async def upload(
         else:
             kind = "document"
             mime = normalize_doc_mime(f.content_type or "", f.filename or "")
-            extracted = extract_text(data, mime, f.filename or "") or None
+            extracted = (
+                await asyncio.to_thread(extract_text, data, mime, f.filename or "")
+            ) or None
 
         att = Attachment(
             id=att_id,
@@ -75,7 +85,6 @@ async def upload(
             extracted_text=extracted,
         )
         db.add(att)
-        db.commit()
         out.append(
             AttachmentOut(
                 id=att.id,
@@ -86,6 +95,7 @@ async def upload(
                 url=f"/api/uploads/{att.id}",
             )
         )
+    await asyncio.to_thread(db.commit)
     return out
 
 

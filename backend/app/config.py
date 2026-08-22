@@ -17,6 +17,21 @@ class Settings(BaseSettings):
     FRONTEND_ORIGIN: str = "http://localhost:5000"
     UPLOAD_DIR: str = "./uploads"
 
+    # Dev-only request instrumentation (wall time / SQL statement count / bytes).
+    PERF_LOG: bool = False
+    PERF_SLOW_MS: float = 0.0
+
+    # Compress JSON/text responses above this size. Streaming (SSE) is never compressed.
+    GZIP_MIN_BYTES: int = 1024
+    # zlib level 1 is several times cheaper than the default 6 and still shrinks a
+    # transcript by ~70%. MultiChat is served over localhost/LAN, so server CPU matters
+    # more than the last few percent of ratio. Raise it if you put it behind a WAN.
+    GZIP_LEVEL: int = 1
+
+    # Tool-call results are truncated to this many characters in the session payload; the
+    # full body is fetched on demand when a tool card is expanded.
+    TOOL_RESULT_PREVIEW_CHARS: int = 2000
+
     # upload limits
     MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024
     MAX_UPLOADS_PER_TURN: int = 6

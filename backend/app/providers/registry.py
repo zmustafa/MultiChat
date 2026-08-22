@@ -4,15 +4,21 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
 from ..models import Provider
-from . import oauth
+from . import http_client, oauth
 from .base import LLMProvider
 from .chatgpt_responses import ChatGPTResponsesProvider
 from .claude_provider import ClaudeProvider
 from .copilot_provider import CopilotProvider
-from .openai_provider import COPILOT_BASE, OpenAIProvider
+from .openai_provider import COPILOT_BASE, OpenAIProvider, close_cached_clients
 
 # provider_types that speak the OpenAI Chat Completions API via the SDK.
 _OPENAI_COMPATIBLE = {"openai", "openai_eu", "openai_compatible", "gemini", "ollama"}
+
+
+async def close_provider_clients() -> None:
+    """Close every pooled provider connection (application shutdown)."""
+    await close_cached_clients()
+    await http_client.close_clients()
 
 
 def pick_default_provider(db: DbSession, user_id: str) -> Provider | None:

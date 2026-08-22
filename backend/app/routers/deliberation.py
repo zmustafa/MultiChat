@@ -7,17 +7,15 @@ search, artifacts and the per-message PDF all work on it without special-casing.
 """
 from __future__ import annotations
 
-import asyncio
-
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
+from ..benchmark import ARMS, run_benchmark
 from ..config import settings
 from ..db import get_db
-from ..benchmark import ARMS, run_benchmark
 from ..deliberation import is_running, request_stop, stream_run
 from ..errors import log_and_describe
 from ..models import (
@@ -26,9 +24,11 @@ from ..models import (
     DeliberationStep,
     Lane,
     Provider,
-    Session as ChatSession,
     Turn,
     User,
+)
+from ..models import (
+    Session as ChatSession,
 )
 from ..providers.registry import build_provider, pick_default_provider
 from ..schemas import MessageExportRequest

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .compression import ConditionalGZipMiddleware
 from .config import settings
 from .db import Base, SessionLocal, engine
 from .routers import (
@@ -17,15 +21,25 @@ from .routers import (
     providers,
     sessions,
     settings_router,
-    snippets,
     snapshots,
+    snippets,
     system,
     tools,
     uploads,
 )
 from .security import hash_password
 
-app = FastAPI(title="MultiChat Compare API")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    _start()
+    try:
+        yield
+    finally:
+        await _shutdown()
+
+
+app = FastAPI(title="MultiChat Compare API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,7 +51,23 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # The frontend reads ETag to send If-None-Match on transcript refetches.
+    expose_headers=["ETag"],
 )
+# Transcripts are hundreds of KB of markdown and are refetched every time a lane
+# finishes. Streaming responses are passed through uncompressed (see compression.py).
+app.add_middleware(
+    ConditionalGZipMiddleware,
+    minimum_size=settings.GZIP_MIN_BYTES,
+    compresslevel=settings.GZIP_LEVEL,
+)
+
+if settings.PERF_LOG:
+    from .perf import PerfLogMiddleware, install_query_counter
+
+    install_query_counter(engine)
+    app.add_middleware(PerfLogMiddleware, slow_ms=settings.PERF_SLOW_MS)
+    logging.getLogger("multichat.perf").setLevel(logging.INFO)
 
 
 def _seed_admin() -> None:
@@ -199,7 +229,7 @@ def _cleanup_generated() -> None:
     import os
     import time
 
-    from sqlalchemy import select
+    from sqlalchemy import delete
 
     from .models import GeneratedFile
     from .tools.artifacts import GENERATED_SUBDIR
@@ -220,9 +250,15 @@ def _cleanup_generated() -> None:
     if removed:
         db = SessionLocal()
         try:
-            for row in db.scalars(select(GeneratedFile)).all():
-                if row.stored_name in removed:
-                    db.delete(row)
+            # Match by name in SQL rather than scanning every row in Python; SQLite caps
+            # host parameters, so the deletes go out in batches.
+            names = list(removed)
+            for i in range(0, len(names), 500):
+                db.execute(
+                    delete(GeneratedFile).where(
+                        GeneratedFile.stored_name.in_(names[i : i + 500])
+                    )
+                )
             db.commit()
         finally:
             db.close()
@@ -275,13 +311,13 @@ def _reset_orphaned_deliberations() -> None:
         db.close()
 
 
-@app.on_event("startup")
-def on_startup() -> None:
+def _start() -> None:
     # import models so metadata is populated before create_all
     from . import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     _migrate()
+    _ensure_indexes()
     _seed_admin()
     _seed_personas()
     _seed_snippets()
@@ -292,6 +328,43 @@ def on_startup() -> None:
     from .broadcast import _sweep_stale_run_files
 
     _sweep_stale_run_files()
+
+
+async def _shutdown() -> None:
+    """Release pooled provider HTTP clients so sockets aren't left open on reload."""
+    from .providers.registry import close_provider_clients
+
+    await close_provider_clients()
+
+
+# Composite indexes for the hot read paths. `create_all` only creates indexes for tables
+# it creates, so an existing database never gains them — hence the explicit DDL.
+_INDEXES: tuple[tuple[str, str, str], ...] = (
+    ("ix_lane_messages_lane_turn", "lane_messages", "lane_id, turn_id"),
+    ("ix_lane_messages_lane_role_order", "lane_messages", "lane_id, role, order_index"),
+    ("ix_turns_session_order", "turns", "session_id, order_index"),
+    ("ix_lanes_session_position", "lanes", "session_id, position"),
+    ("ix_tool_calls_message", "tool_calls", "lane_message_id"),
+    ("ix_deliberation_runs_user_created", "deliberation_runs", "user_id, created_at"),
+    ("ix_deliberation_runs_session", "deliberation_runs", "session_id"),
+    ("ix_generated_files_session", "generated_files", "session_id"),
+    ("ix_generated_files_stored", "generated_files", "stored_name"),
+    ("ix_sessions_user_updated", "sessions", "user_id, updated_at"),
+)
+
+
+def _ensure_indexes() -> None:
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    tables = set(insp.get_table_names())
+    with engine.begin() as conn:
+        for name, table, cols in _INDEXES:
+            if table not in tables:
+                continue
+            conn.execute(
+                text(f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({cols})")
+            )
 
 
 def _reconnect_integrations() -> None:

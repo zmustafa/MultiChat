@@ -5,7 +5,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
 from ..db import get_db
-from ..models import Folder, Session as ChatSession, User
+from ..models import Folder, User
+from ..models import Session as ChatSession
 from ..schemas import FolderCreate, FolderOut, FolderUpdate
 from ..security import current_user
 

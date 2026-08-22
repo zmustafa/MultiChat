@@ -1,0 +1,26 @@
+# Lint config for the backend. Deliberately conservative: real defects (F), import
+# hygiene (I) and obvious style (E/W), rather than a wholesale restyle of working code.
+line-length = 100
+target-version = "py311"
+
+exclude = [".venv", "uploads", "logs", "__pycache__"]
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E501",   # long lines are mostly prompt text and URLs; not worth reflowing
+    "E741",   # `l` for a lane/list element is used throughout; renaming is churn, not clarity
+    "B008",   # FastAPI's Depends(...) in defaults is the framework's own idiom
+    "B904",   # HTTP errors deliberately do not chain the cause (see errors.py)
+    "UP038",  # isinstance tuples read better than X | Y here
+]
+
+[lint.per-file-ignores]
+# Startup helpers import inside functions on purpose, to keep import time down and to
+# avoid circular imports between main, models and the routers.
+"app/main.py" = ["E402"]
+# Test setup must configure the environment before importing the app.
+"tests/conftest.py" = ["E402"]
+
+[lint.isort]
+known-first-party = ["app"]

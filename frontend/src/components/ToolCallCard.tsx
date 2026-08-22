@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import type { LiveToolCall } from "../hooks/useBroadcast";
 
 // Pick a short, human-friendly preview of what a tool call is doing from its
@@ -52,7 +52,7 @@ function argsPreview(args: Record<string, any> | undefined): string | null {
   return null;
 }
 
-export function ToolCallCard({ call }: { call: LiveToolCall }) {
+export const ToolCallCard = memo(function ToolCallCard({ call }: { call: LiveToolCall }) {
   const [open, setOpen] = useState(false);
   const statusColor =
     call.status === "ok"
@@ -121,4 +121,4 @@ export function ToolCallCard({ call }: { call: LiveToolCall }) {
       )}
     </div>
   );
-}
+});

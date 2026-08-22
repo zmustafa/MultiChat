@@ -128,7 +128,6 @@ export function ScreenshotCapture({ onAttach, onClose }: Props) {
       if (imgUrl) URL.revokeObjectURL(imgUrl);
       if (croppedUrl) URL.revokeObjectURL(croppedUrl);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imgUrl, croppedUrl]);
 
   // ---- Region selection (pointer, any direction) ----
@@ -201,7 +200,6 @@ export function ScreenshotCapture({ onAttach, onClose }: Props) {
         return URL.createObjectURL(blob);
       });
     }, "image/png");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sel]);
 
   async function sendCroppedImageToAI() {

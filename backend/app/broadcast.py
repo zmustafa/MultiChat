@@ -4,34 +4,73 @@ import asyncio
 import base64
 import json
 import os
-import re
 import time
-from typing import Any, AsyncIterator
+from collections import OrderedDict
+from collections.abc import AsyncIterator
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DbSession
+from sqlalchemy.orm import selectinload
 
+from .artifact_links import (
+    GENERATOR_EXTENSIONS,
+    collect_real_links,
+    reconcile_generated_links,
+    record_generated_files,
+    requested_file_generator,
+    tool_created_requested_file,
+)
 from .config import settings
 from .crypto import decrypt
 from .db import SessionLocal
 from .documents import document_prompt_block
 from .models import (
     Attachment,
-    GeneratedFile,
     Lane,
     LaneMessage,
     Provider,
-    Session as ChatSession,
     ToolCall,
     ToolCredential,
     Turn,
 )
+from .models import (
+    Session as ChatSession,
+)
+from .prompts import inject_diagram_guidance, inject_tool_guidance
 from .providers.base import ChatMessage, ToolSpec
 from .providers.registry import build_provider
+from .run_hub import (
+    HUB_TTL_SECONDS,
+    _delete_run_file,
+    _hubs,
+    _RunHub,
+    _sweep_stale_run_files,  # noqa: F401 - re-exported for the startup sweep in main.py
+    has_hub,
+    resume_stream,
+    sse,
+)
 from .tools.argfix import unflatten_args
 from .tools.base import ToolContext
 from .tools.registry import get_tool, resolve_enabled_tools
+
+# Re-exported so existing imports (`from .broadcast import sse, resume_stream, …`) and the
+# startup sweep keep working now that the hub lives in its own module.
+__all__ = [
+    "HUB_TTL_SECONDS",
+    "active_lane_ids",
+    "active_session_ids",
+    "build_lane_history",
+    "has_hub",
+    "lane_progress",
+    "load_session_turns",
+    "multiplex",
+    "request_stop",
+    "resume_stream",
+    "run_lane",
+    "sse",
+]
 
 # cancellation registry: key (session_id, lane_id) -> asyncio.Event
 _cancels: dict[tuple[str, str], asyncio.Event] = {}
@@ -122,24 +161,46 @@ async def _events_until_cancel(
             cancel_task.cancel()
 
 
-def sse(event: str, data: dict[str, Any]) -> str:
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+# Base64-encoded image attachments, shared across every lane and turn of a broadcast.
+# Re-reading and re-encoding each image per lane per turn was the single largest source
+# of blocking file I/O on the streaming path. Bounded by total bytes, not entry count,
+# because one attachment can be several MB.
+_IMAGE_CACHE_MAX_BYTES = 48 * 1024 * 1024
+_image_cache: OrderedDict[tuple[str, int, int], dict] = OrderedDict()
+_image_cache_bytes = 0
 
 
 def _image_part(db: DbSession, att: Attachment) -> dict | None:
     """Return an OpenAI-format image_url content part for an attachment, or None."""
+    global _image_cache_bytes
     if att.kind != "image":
         return None
     path = os.path.join(settings.UPLOAD_DIR, att.storage_path)
-    if not os.path.exists(path):
+    try:
+        stat = os.stat(path)
+    except OSError:
         return None
-    with open(path, "rb") as fh:
-        data = fh.read()
+    key = (att.storage_path, int(stat.st_mtime), stat.st_size)
+    cached = _image_cache.get(key)
+    if cached is not None:
+        _image_cache.move_to_end(key)
+        return cached
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return None
     b64 = base64.b64encode(data).decode()
-    return {
+    part = {
         "type": "image_url",
         "image_url": {"url": f"data:{att.mime_type};base64,{b64}"},
     }
+    _image_cache[key] = part
+    _image_cache_bytes += len(b64)
+    while _image_cache_bytes > _IMAGE_CACHE_MAX_BYTES and len(_image_cache) > 1:
+        _, evicted = _image_cache.popitem(last=False)
+        _image_cache_bytes -= len(evicted["image_url"]["url"])
+    return part
 
 
 def _user_content(text: str, image_parts: list[dict]) -> Any:
@@ -153,13 +214,34 @@ def _user_content(text: str, image_parts: list[dict]) -> Any:
     return parts
 
 
+def load_session_turns(db: DbSession, session_id: str) -> list[Turn]:
+    """Every turn of a session with its attachments eager-loaded.
+
+    ``turn.attachments`` is a lazy relationship, so walking turns without this costs one
+    extra query per turn — per lane, per broadcast.
+    """
+    return list(
+        db.scalars(
+            select(Turn)
+            .where(Turn.session_id == session_id)
+            .options(selectinload(Turn.attachments))
+            .order_by(Turn.order_index)
+        ).all()
+    )
+
+
 def build_lane_history(
     db: DbSession,
     session: ChatSession,
     lane: Lane,
     up_to_turn_order: int | None = None,
+    turns: list[Turn] | None = None,
 ) -> list[ChatMessage]:
-    """Reconstruct a lane's conversation up to (but not including) a turn order."""
+    """Reconstruct a lane's conversation up to (but not including) a turn order.
+
+    ``turns`` may be supplied by the caller so that a broadcast fanning out to N lanes
+    loads the session's turns once rather than N times.
+    """
     messages: list[ChatMessage] = []
     # Combine the user's global custom instructions with the session system prompt.
     from .models import User
@@ -173,9 +255,19 @@ def build_lane_history(
     if parts:
         messages.append({"role": "system", "content": "\n\n".join(parts)})
 
-    turns = db.scalars(
-        select(Turn).where(Turn.session_id == session.id).order_by(Turn.order_index)
-    ).all()
+    if turns is None:
+        turns = load_session_turns(db, session.id)
+
+    # One query for the whole lane instead of one per turn. Ordered by order_index so the
+    # first row for a turn wins, matching the previous per-turn `.order_by(...)` scalar.
+    assistant_by_turn: dict[str, str] = {}
+    for turn_id, content in db.execute(
+        select(LaneMessage.turn_id, LaneMessage.content)
+        .where(LaneMessage.lane_id == lane.id, LaneMessage.role == "assistant")
+        .order_by(LaneMessage.order_index)
+    ).all():
+        assistant_by_turn.setdefault(turn_id, content)
+
     for turn in turns:
         if up_to_turn_order is not None and turn.order_index >= up_to_turn_order:
             break
@@ -192,261 +284,21 @@ def build_lane_history(
         messages.append(
             {"role": "user", "content": _user_content(text, image_parts)}
         )
-        assistant = db.scalar(
-            select(LaneMessage)
-            .where(
-                LaneMessage.lane_id == lane.id,
-                LaneMessage.turn_id == turn.id,
-                LaneMessage.role == "assistant",
-            )
-            .order_by(LaneMessage.order_index)
-        )
-        if assistant and assistant.content:
-            messages.append({"role": "assistant", "content": assistant.content})
+        answer = assistant_by_turn.get(turn.id)
+        if answer:
+            messages.append({"role": "assistant", "content": answer})
     return messages
 
 
-_GENERATED_LINK_RE = re.compile(
-    r"/api/files/([0-9a-f]{32}\.(pptx|docx|xlsx|pdf))\?name=([^)\s]+)"
-)
-_GEN_MIME = {
-    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "pdf": "application/pdf",
-}
-_FILE_GENERATOR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("generate_pptx", re.compile(r"\b(power\s*point|pptx|slide deck|presentation)\b", re.I)),
-    ("generate_docx", re.compile(r"\b(word document|word doc|docx)\b", re.I)),
-    ("generate_xlsx", re.compile(r"\b(excel|xlsx|spreadsheet)\b", re.I)),
-    ("generate_pdf", re.compile(r"\bpdf\b", re.I)),
-)
-_GENERATOR_EXTENSIONS = {
-    "generate_pptx": "pptx",
-    "generate_docx": "docx",
-    "generate_xlsx": "xlsx",
-    "generate_pdf": "pdf",
-}
-
-
-def _message_text(message: ChatMessage) -> str:
-    content = message.get("content")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(
-            str(part.get("text") or "")
-            for part in content
-            if isinstance(part, dict) and part.get("type") == "text"
-        )
-    return ""
-
-
-def _requested_file_generator(message: ChatMessage) -> str | None:
-    text = _message_text(message)
-    for generator, pattern in _FILE_GENERATOR_PATTERNS:
-        if pattern.search(text):
-            return generator
-    return None
-
-
-def _tool_created_requested_file(
-    tool_call_rows: list[tuple[str, dict, Any]], generator: str | None
-) -> bool:
-    if not generator:
-        return True
-    extension = _GENERATOR_EXTENSIONS[generator]
-    suffix = f".{extension}"
-    for name, _args, result in tool_call_rows:
-        if name != generator:
-            continue
-        text = str((result or {}).get("result") or "")
-        if any(
-            match.group(1).lower().endswith(suffix)
-            for match in re.finditer(r"\[[^\]]+\]\((/api/files/[^)\s]+)\)", text)
-        ):
-            return True
-    return False
-
-
-def _reconcile_generated_links(
-    text: str, real_links: list[tuple[str, str]]
-) -> tuple[str, list[tuple[str, str]]]:
-    """Replace unverified file links and return real links omitted by the model."""
-    real_urls = [url for _label, url in real_links]
-    unused_urls = list(real_urls)
-
-    def _take_replacement(url: str) -> str | None:
-        path = url.split("?", 1)[0]
-        extension_match = re.search(r"\.([a-z0-9]+)$", path, re.I)
-        if extension_match:
-            extension = extension_match.group(1).lower()
-            for candidate in unused_urls:
-                if candidate.split("?", 1)[0].lower().endswith(f".{extension}"):
-                    unused_urls.remove(candidate)
-                    return candidate
-            return None
-        if unused_urls:
-            return unused_urls.pop(0)
-        return None
-
-    def _fix_link(match: "re.Match[str]") -> str:
-        label, url = match.group(1), match.group(2)
-        if url in real_urls:
-            if url in unused_urls:
-                unused_urls.remove(url)
-            return match.group(0)
-        is_file_link = url.startswith("/api/files/")
-        looks_like_download = "download" in label.lower() or "\U0001F4E5" in label
-        if is_file_link or looks_like_download:
-            replacement = _take_replacement(url)
-            return f"[{label}]({replacement})" if replacement else label
-        return match.group(0)
-
-    fixed = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", _fix_link, text)
-    missing = [(label, url) for label, url in real_links if url not in fixed]
-    return fixed, missing
-
-
-def _record_generated_files(db: DbSession, session: ChatSession, text: str) -> None:
-    """Scan a tool result for generated-file download links and log them so they
-    appear in the session's Files library."""
-    for stored_name, ext, download_name in _GENERATED_LINK_RE.findall(text or ""):
-        exists = db.scalar(
-            select(GeneratedFile).where(GeneratedFile.stored_name == stored_name)
-        )
-        if exists:
-            continue
-        path = os.path.join(settings.UPLOAD_DIR, "generated", stored_name)
-        size = os.path.getsize(path) if os.path.exists(path) else 0
-        db.add(
-            GeneratedFile(
-                user_id=session.user_id,
-                session_id=session.id,
-                stored_name=stored_name,
-                download_name=download_name,
-                mime_type=_GEN_MIME.get(ext, "application/octet-stream"),
-                size_bytes=size,
-                kind=ext,
-            )
-        )
-    db.commit()
-
-def _inject_tool_guidance(messages: list, tools: list) -> None:
-    """Steer models to actually USE the file-generation tools instead of writing code.
-
-    Some models (notably gemini) will output python-pptx/docx code and claim they
-    "cannot create files" rather than calling generate_pptx/docx/xlsx/pdf. A firm
-    system instruction fixes that across providers.
-    """
-    gen = sorted(
-        t.definition.name
-        for t in tools
-        if t.definition.name.startswith("generate_")
-    )
-    if not gen:
-        return
-    guidance = (
-        "You have tools that produce REAL, downloadable files: " + ", ".join(gen) + ". "
-        "STRICT RULE FOR EVERY MODEL: a downloadable file (PowerPoint/Word/Excel/PDF/image) "
-        "is created ONLY when the user EXPLICITLY asks for that file. Two rules govern the "
-        "tools:\n"
-        "1) ONLY create a file when the user has EXPLICITLY asked for a FILE or DOCUMENT "
-        "in a downloadable format — i.e. their message names a document/file or a format "
-        "like Word/PowerPoint/Excel/PDF/image (e.g. 'make a PowerPoint', 'export this to "
-        "Excel', 'give me a PDF', 'create a Word doc', 'put it in a file', 'download as "
-        "pptx') — or they have clearly confirmed they want one. The verbs 'generate', "
-        "'create', 'make', 'build', 'write', 'add', or 'give me' do NOT by themselves mean "
-        "a file: applied to content they mean produce it INLINE in your reply. For example "
-        "'generate the az cli to create this', 'write a script', 'create a function', 'make "
-        "a plan', 'generate code', 'add diagrams', 'add a diagram', 'add a chart', 'add a "
-        "table', 'draw a flowchart', 'illustrate this' are requests for INLINE content in "
-        "the chat (prose, code, a Mermaid diagram, or a Markdown table) — answer them "
-        "inline and do NOT call any generate_* tool. In particular, asking for a diagram, "
-        "chart, or table is NEVER by itself a request for a PowerPoint/PDF/image file — put "
-        "a diagram inline as a ```mermaid block. Never produce a file the user did not "
-        "clearly ask for just because the topic seems document-shaped.\n"
-        "2) When a document, deck, spreadsheet, or PDF would genuinely make your answer "
-        "more useful but the user has NOT asked for one, you MAY add a brief one-line "
-        "OFFER at the end (e.g. 'I can turn this into a PowerPoint or Excel file if you "
-        "want.') — but do NOT call any generate_* tool yet; wait for them to say yes.\n"
-        "When the user DOES ask for a file: you MUST actually call the matching tool "
-        "(generate_pptx / generate_docx / generate_xlsx / generate_pdf / generate_image) "
-        "— one call per requested file — gathering any needed data first, then reply "
-        "with the download link(s) the tool returns. Do NOT output code (e.g. "
-        "python-pptx/openpyxl) to build the file, and never claim you cannot create, "
-        "compile, or host files — these tools do it for you."
-    )
-    # Strong prefix in the system message.
-    if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
-        base = messages[0].get("content") or ""
-        sep = "\n\n" if base else ""
-        messages[0] = {**messages[0], "content": f"{base}{sep}{guidance}"}
-    else:
-        messages.insert(0, {"role": "system", "content": guidance})
-    # A fresh reminder appended to the latest user message (weaker models weight
-    # recency); attached as text so it survives multimodal content too.
-    reminder = (
-        "\n\n[System reminder: Only generate a file if THIS message explicitly asks for a "
-        "FILE/document or a format (Word/PowerPoint/Excel/PDF/image). Verbs like "
-        "'generate', 'create', 'make', 'add', or 'write' applied to code/commands/CLI/text/"
-        "diagrams/charts/tables mean produce it INLINE here — NOT a file (e.g. 'generate "
-        "the az cli' = show commands in chat; 'add diagrams' = add inline ```mermaid "
-        "diagrams, NOT a PowerPoint/PDF/image). If it does ask for a file, you MUST call "
-        "the matching generate_* tool now and return the download link (not only prose or "
-        "code). If it does NOT ask for a file, do NOT create one; at most add a brief "
-        "one-line offer to make a PowerPoint/Word/Excel/PDF if they'd like it.]"
-    )
-    for i in range(len(messages) - 1, -1, -1):
-        m = messages[i]
-        if isinstance(m, dict) and m.get("role") == "user":
-            content = m.get("content")
-            if isinstance(content, str):
-                messages[i] = {**m, "content": content + reminder}
-            elif isinstance(content, list):
-                messages[i] = {
-                    **m,
-                    "content": content + [{"type": "text", "text": reminder}],
-                }
-            break
-
-def _inject_diagram_guidance(messages: list) -> None:
-    """Tell models to draw diagrams as Mermaid, which the app renders as real visuals.
-
-    Without this, models "add a diagram" by drawing ASCII-art boxes inside a plain code
-    fence — which shows up as an unhelpful black text block. The frontend renders
-    ```mermaid fenced blocks into actual SVG diagrams, so steer models there.
-    """
-    guidance = (
-        "DIAGRAMS: When the user asks for a diagram, flowchart, architecture/system "
-        "diagram, sequence diagram, ER diagram, mind map, state machine, or any visual, "
-        "output it INLINE as a fenced ```mermaid code block containing VALID Mermaid syntax "
-        "— the app renders Mermaid as a real, rendered diagram. Do NOT draw diagrams with "
-        "ASCII art, plain-text boxes, or +---+ characters, and do NOT put the diagram in a "
-        "plain (non-mermaid) code fence. A request for a diagram/chart (e.g. 'add "
-        "diagrams') is NOT a request for a PowerPoint/PDF/image file — render it inline "
-        "with Mermaid and do NOT call any generate_* tool unless the user explicitly asked "
-        "for a file in a specific format. Choose the right Mermaid type (e.g. 'flowchart "
-        "LR/TD', 'sequenceDiagram', 'erDiagram', 'stateDiagram-v2', 'mindmap'), keep node "
-        "labels short, and wrap labels containing special characters in quotes. You may add "
-        "a short explanation before or after the diagram."
-    )
-    if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
-        base = messages[0].get("content") or ""
-        sep = "\n\n" if base else ""
-        messages[0] = {**messages[0], "content": f"{base}{sep}{guidance}"}
-    else:
-        messages.insert(0, {"role": "system", "content": guidance})
-
-
-def _session_documents(db: DbSession, session: ChatSession) -> list[dict]:
+def _session_documents(
+    db: DbSession, session: ChatSession, turns: list[Turn] | None = None
+) -> list[dict]:
     """Collect extracted text of all document attachments across the session's turns,
     so the read_document tool can access any uploaded document."""
     docs: list[dict] = []
     seen: set[str] = set()
-    turns = db.scalars(
-        select(Turn).where(Turn.session_id == session.id).order_by(Turn.order_index)
-    ).all()
+    if turns is None:
+        turns = load_session_turns(db, session.id)
     for turn in turns:
         for att in turn.attachments:
             if att.kind == "document" and att.extracted_text and att.filename not in seen:
@@ -455,26 +307,21 @@ def _session_documents(db: DbSession, session: ChatSession) -> list[dict]:
     return docs
 
 
-def _brave_key(db: DbSession, user_id: str) -> str | None:
+def _web_search_credential(db: DbSession, user_id: str) -> tuple[str | None, str | None]:
+    """The user's web_search API key and preferred engine, from a single row read.
+
+    These used to be two functions issuing the same query for the same row, once per lane
+    per broadcast.
+    """
     cred = db.scalar(
         select(ToolCredential).where(
             ToolCredential.user_id == user_id, ToolCredential.tool == "web_search"
         )
     )
-    return decrypt(cred.api_key_encrypted) if cred else None
-
-
-def _search_engine(db: DbSession, user_id: str) -> str | None:
-    """Read the user's preferred web_search engine (brave|duckduckgo) from the
-    web_search tool credential's extra config."""
-    cred = db.scalar(
-        select(ToolCredential).where(
-            ToolCredential.user_id == user_id, ToolCredential.tool == "web_search"
-        )
-    )
-    if cred and cred.extra_json:
-        return cred.extra_json.get("engine")
-    return None
+    if not cred:
+        return None, None
+    engine = (cred.extra_json or {}).get("engine")
+    return decrypt(cred.api_key_encrypted), engine
 
 
 def _image_provider(db: DbSession, user_id: str) -> dict:
@@ -503,8 +350,14 @@ async def run_lane(
     turn_id: str,
     user_message: ChatMessage,
     queue: asyncio.Queue,
+    shared: dict | None = None,
 ) -> None:
-    """Run one lane's agent loop, pushing SSE strings onto the shared queue."""
+    """Run one lane's agent loop, pushing SSE strings onto the shared queue.
+
+    ``shared`` is a per-broadcast scratch dict holding values that are identical for every
+    lane (tool credentials, extracted documents, the image provider). Only plain data goes
+    in it — each lane owns its own DB session, so ORM instances must not be shared.
+    """
     cancel = asyncio.Event()
     _cancels[(session_id, lane_id)] = cancel
     db = SessionLocal()
@@ -514,6 +367,8 @@ async def run_lane(
     persisted = False
     error: str | None = None
     tool_call_rows: list[tuple[str, dict, Any]] = []
+    if shared is None:
+        shared = {}
     try:
         session = db.get(ChatSession, session_id)
         lane = db.get(Lane, lane_id)
@@ -532,12 +387,17 @@ async def run_lane(
 
         await queue.put(sse("lane_start", {"lane_id": lane_id, "turn_id": turn_id}))
 
-        history = build_lane_history(db, session, lane, up_to_turn_order=turn.order_index)
+        # History reconstruction is synchronous SQLAlchemy plus (cached) file reads; run
+        # it off the loop so a long transcript can't stall the other lanes' streaming.
+        turns = await asyncio.to_thread(load_session_turns, db, session_id)
+        history = await asyncio.to_thread(
+            build_lane_history, db, session, lane, turn.order_index, turns
+        )
         messages: list[ChatMessage] = [*history, user_message]
 
         tools = resolve_enabled_tools(session.tool_config_json) if session.tools_enabled else []
-        _inject_tool_guidance(messages, tools)
-        _inject_diagram_guidance(messages)
+        inject_tool_guidance(messages, tools)
+        inject_diagram_guidance(messages)
         tool_specs = [
             ToolSpec(
                 name=t.definition.name,
@@ -546,20 +406,25 @@ async def run_lane(
             )
             for t in tools
         ]
+        if "tool_env" not in shared:
+            brave_key, engine = _web_search_credential(db, session.user_id)
+            shared["tool_env"] = {
+                "brave_api_key": brave_key,
+                "search_engine": engine,
+                "documents": _session_documents(db, session, turns),
+                **_image_provider(db, session.user_id),
+            }
         ctx = ToolContext(
             user_id=session.user_id,
-            brave_api_key=_brave_key(db, session.user_id),
-            search_engine=_search_engine(db, session.user_id),
             options=(session.tool_config_json or {}).get("options"),
-            documents=_session_documents(db, session),
-            **_image_provider(db, session.user_id),
+            **shared["tool_env"],
         )
 
         llm = await build_provider(provider, db, lane.model)
         prompt_tokens = 0
         completion_tokens = 0
         iters = 0
-        requested_generator = _requested_file_generator(user_message)
+        requested_generator = requested_file_generator(user_message)
         artifact_repair_attempts = 0
         _call_cache: dict[str, tuple] = {}
         _gen_count = {"n": 0}
@@ -599,7 +464,7 @@ async def run_lane(
             if cancel.is_set():
                 break
             if not requested_calls:
-                requested_file_created = _tool_created_requested_file(
+                requested_file_created = tool_created_requested_file(
                     tool_call_rows, requested_generator
                 )
                 matching_tool = next(
@@ -620,7 +485,7 @@ async def run_lane(
                             "role": "user",
                             "content": (
                                 "The current request explicitly requires a downloadable "
-                                f"{_GENERATOR_EXTENSIONS[requested_generator].upper()} file, "
+                                f"{GENERATOR_EXTENSIONS[requested_generator].upper()} file, "
                                 "but no real file has been created. Call the available "
                                 f"{requested_generator} tool now. Do not invent, reuse, or "
                                 "write an /api/files/ URL yourself; only the tool result can "
@@ -671,10 +536,14 @@ async def run_lane(
                 )
 
             # Execute this turn's tool calls concurrently (bounded) so a model that
-            # requests many calls at once doesn't run them one-at-a-time.
+            # requests many calls at once doesn't run them one-at-a-time. The semaphore
+            # is bound as a default argument rather than captured, so each iteration's
+            # tasks provably use that iteration's semaphore.
             sem = asyncio.Semaphore(settings.MAX_TOOL_CONCURRENCY)
 
-            async def _run_call(call: Any) -> tuple[Any, str, Any, str]:
+            async def _run_call(
+                call: Any, sem: asyncio.Semaphore = sem
+            ) -> tuple[Any, str, Any, str]:
                 async with sem:
                     tool = get_tool(call.name)
                     if not tool:
@@ -723,7 +592,9 @@ async def run_lane(
                 )
                 if status == "ok":
                     try:
-                        _record_generated_files(db, session, result_text)
+                        await asyncio.to_thread(
+                            record_generated_files, db, session, result_text
+                        )
                     except Exception:  # noqa: BLE001
                         db.rollback()
                 await queue.put(
@@ -798,17 +669,9 @@ async def run_lane(
         # omit it or fabricate a bogus link (a chat/localhost URL) in its place. Collect
         # the real links from the tool results, then (a) rewrite any fabricated download
         # links to point at the real files and (b) append links the model dropped.
-        real_links: list[tuple[str, str]] = []
-        _seen_urls: set[str] = set()
-        for _name, _args, _res in tool_call_rows:
-            txt = (_res or {}).get("result") or ""
-            for m in re.finditer(r"\[([^\]]+)\]\((/api/files/[^)\s]+)\)", txt):
-                label, url = m.group(1), m.group(2)
-                if url not in _seen_urls:
-                    _seen_urls.add(url)
-                    real_links.append((label, url))
+        real_links = collect_real_links(tool_call_rows)
 
-        full_text, missing_links = _reconcile_generated_links(full_text, real_links)
+        full_text, missing_links = reconcile_generated_links(full_text, real_links)
         if missing_links:
             links = [f"[{label}]({url})" for label, url in missing_links]
             addition = ("\n\n" if full_text.strip() else "") + (
@@ -817,7 +680,7 @@ async def run_lane(
             full_text += addition
             await queue.put(sse("chunk", {"lane_id": lane_id, "delta": addition}))
 
-        if not _tool_created_requested_file(tool_call_rows, requested_generator):
+        if not tool_created_requested_file(tool_call_rows, requested_generator):
             notice = (
                 "\n\n" if full_text.strip() else ""
             ) + "The requested downloadable file could not be created. No download was produced."
@@ -982,161 +845,6 @@ async def run_lane(
         db.close()
 
 
-# Per-run event hub: buffers every SSE event of an in-flight broadcast turn and fans it
-# out to live subscribers. Lets a client that navigated away and returned re-attach to the
-# live stream — replaying what was already emitted, then tailing the rest token-by-token —
-# instead of only polling partial text. Keyed by (session_id, turn_id). Kept a short while
-# after the run finishes so a returning client can still catch the tail + terminal "done".
-HUB_TTL_SECONDS = 45
-
-# The hub's event buffer is also mirrored (batched) to a small NDJSON file under this dir, so
-# a client can still replay a run whose in-memory hub was lost to a backend --reload/restart.
-_RUNS_DIR = os.path.join(settings.UPLOAD_DIR, "runs")
-_RUN_FILE_MAX_AGE = 3600  # startup sweep deletes run buffers older than this (crash leftovers)
-
-_hubs: dict[tuple[str, str], "_RunHub"] = {}
-
-
-# Run-buffer file names are built from ids that ultimately come from a request, so anything
-# outside this character set is replaced before the name is used as a path component.
-_RUN_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
-
-
-def _run_file_path(session_id: str, turn_id: str) -> str:
-    """Absolute path of a run's NDJSON buffer, constrained to the runs directory."""
-    safe = _RUN_NAME_UNSAFE.sub("_", f"{session_id}__{turn_id}")[:200]
-    root = os.path.realpath(_RUNS_DIR)
-    path = os.path.realpath(os.path.join(root, f"{safe}.ndjson"))
-    if not path.startswith(root + os.sep):
-        raise ValueError("invalid run buffer path")
-    return path
-
-
-def _delete_run_file(session_id: str, turn_id: str) -> None:
-    try:
-        os.remove(_run_file_path(session_id, turn_id))
-    except (OSError, ValueError):
-        pass
-
-
-def _sweep_stale_run_files() -> None:
-    """Remove run buffers left behind by crashes/old restarts (older than the max age).
-    Recent files are kept so an in-progress run interrupted by a --reload can still resume."""
-    try:
-        now = time.time()
-        for name in os.listdir(_RUNS_DIR):
-            path = os.path.join(_RUNS_DIR, name)
-            try:
-                if now - os.path.getmtime(path) > _RUN_FILE_MAX_AGE:
-                    os.remove(path)
-            except OSError:
-                pass
-    except OSError:
-        pass
-
-
-class _RunHub:
-    """In-memory buffer + pub/sub for one broadcast turn's SSE events, mirrored to disk."""
-
-    def __init__(self, session_id: str, turn_id: str) -> None:
-        self.events: list[str] = []
-        self.subscribers: set[asyncio.Queue] = set()
-        self.done = False
-        self._path = _run_file_path(session_id, turn_id)
-        self._flushed = 0  # events already written to disk
-        self._last_flush = 0.0
-
-    async def put(self, item: str) -> None:
-        # Duck-types asyncio.Queue.put so run_lane can publish through it unchanged.
-        self.events.append(item)
-        for q in list(self.subscribers):
-            q.put_nowait(item)
-        # Batched, off-thread mirror to disk (throttled so token chunks don't hammer I/O).
-        if len(self.events) - self._flushed >= 25 or (
-            time.time() - self._last_flush > 1.5
-        ):
-            await asyncio.to_thread(self._flush_sync)
-
-    def _flush_sync(self) -> None:
-        new = self.events[self._flushed :]
-        if not new:
-            return
-        try:
-            os.makedirs(_RUNS_DIR, exist_ok=True)
-            with open(self._path, "a", encoding="utf-8") as f:
-                for e in new:
-                    f.write(json.dumps(e))
-                    f.write("\n")
-            self._flushed = len(self.events)
-            self._last_flush = time.time()
-        except OSError:
-            pass
-
-    def finish(self) -> None:
-        self.done = True
-        self._flush_sync()  # final small write to capture the terminal "done"
-        for q in list(self.subscribers):
-            q.put_nowait(None)
-
-    def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue()
-        for e in self.events:  # replay everything emitted so far
-            q.put_nowait(e)
-        if self.done:
-            q.put_nowait(None)
-        self.subscribers.add(q)
-        return q
-
-    def unsubscribe(self, q: asyncio.Queue) -> None:
-        self.subscribers.discard(q)
-
-
-def has_hub(session_id: str, turn_id: str) -> bool:
-    return (session_id, turn_id) in _hubs
-
-
-def _read_run_lines(path: str) -> list[str]:
-    with open(path, "r", encoding="utf-8") as f:
-        return f.readlines()
-
-
-async def resume_stream(session_id: str, turn_id: str) -> AsyncIterator[str]:
-    """Re-attach to an in-flight broadcast: replay buffered events, then tail live ones."""
-    hub = _hubs.get((session_id, turn_id))
-    if hub is not None:
-        q = hub.subscribe()
-        try:
-            while True:
-                item = await q.get()
-                if item is None:
-                    break
-                yield item
-        finally:
-            hub.unsubscribe(q)
-        return
-    # No live hub (most likely the backend restarted mid-run) — replay the persisted buffer
-    # if one exists. The run itself is gone, so this yields the captured partial then closes;
-    # the client's reconcile/poll + the persisted DB message take over from there.
-    try:
-        path = _run_file_path(session_id, turn_id)
-    except ValueError:
-        return
-    if not os.path.exists(path):
-        return
-    try:
-        lines = await asyncio.to_thread(_read_run_lines, path)
-    except OSError:
-        return
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            yield json.loads(line)
-        except (json.JSONDecodeError, ValueError):
-            continue
-
-
 async def multiplex(
     session_id: str,
     turn_id: str,
@@ -1145,9 +853,12 @@ async def multiplex(
     """Run N lanes concurrently, multiplexing their SSE events over one stream."""
     hub = _RunHub(session_id, turn_id)
     _hubs[(session_id, turn_id)] = hub
+    # Values identical for every lane (tool credentials, extracted documents, image
+    # provider) are resolved by the first lane and reused by the rest.
+    shared: dict = {}
 
     async def _wrap(lane_id: str, msg: ChatMessage) -> None:
-        await run_lane(session_id, lane_id, turn_id, msg, hub)
+        await run_lane(session_id, lane_id, turn_id, msg, hub, shared)
 
     tasks = [asyncio.create_task(_wrap(lid, msg)) for lid, msg in lanes]
 

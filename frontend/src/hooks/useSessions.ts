@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiFetch } from "../api/client";
+import { apiFetch, apiFetchCached } from "../api/client";
 import type {
   Lane,
   LaneRole,
@@ -11,6 +11,9 @@ export function useSessions() {
   return useQuery({
     queryKey: ["sessions"],
     queryFn: () => apiFetch<SessionListItem[]>("/api/sessions"),
+    // The sidebar list is invalidated by most mutations and polled while a panel runs;
+    // a short staleness window collapses the resulting bursts into one request.
+    staleTime: 2000,
   });
 }
 
@@ -18,23 +21,26 @@ export function useSessions() {
  * Poll which chats currently have a lane generating (active or background), so the
  * sidebar can show a live spinner next to them. Cheap in-memory backend lookup.
  */
-export function useActiveSessions() {
+export function useActiveSessions(enabled = true) {
   return useQuery({
     queryKey: ["sessions", "active"],
     queryFn: () =>
       apiFetch<{ session_ids: string[] }>("/api/sessions/active"),
-    refetchInterval: 1500,
-    // Keep polling even when the tab/window is not focused, so the sidebar spinner
-    // still reflects chats generating in the background.
+    // Back off while the tab is hidden: nothing is on screen to update, and this used to
+    // poll at full rate in the background forever.
+    refetchInterval: () => (document.hidden ? 6000 : 1500),
     refetchIntervalInBackground: true,
+    enabled,
   });
 }
 
 export function useSession(id: string | null) {
   return useQuery({
     queryKey: ["session", id],
-    queryFn: () => apiFetch<SessionDetail>(`/api/sessions/${id}`),
+    // Conditional GET: an unchanged transcript comes back as a 304 with no body.
+    queryFn: () => apiFetchCached<SessionDetail>(`/api/sessions/${id}`),
     enabled: !!id,
+    staleTime: 250,
   });
 }
 

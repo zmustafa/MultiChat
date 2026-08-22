@@ -11,7 +11,7 @@ nothing next to the model calls it summarizes.
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable
+from collections.abc import Iterable
 
 APPROVE = "APPROVE"
 REQUEST_CHANGES = "REQUEST_CHANGES"

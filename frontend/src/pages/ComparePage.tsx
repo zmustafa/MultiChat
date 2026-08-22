@@ -1,13 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { API_BASE, apiFetch, getToken, mediaUrl } from "../api/client";
 import type { LaneRole, Persona } from "../api/types";
 import { CommandPalette } from "../components/CommandPalette";
-import { ArtifactPanel } from "../components/ArtifactPanel";
 import { CompareGrid } from "../components/CompareGrid";
-import { DeliberationLaunch } from "../components/DeliberationLaunch";
-import { DeliberationView } from "../components/DeliberationView";
 import { DiffView } from "../components/DiffView";
 import { InsightsPanel } from "../components/InsightsPanel";
 import { FilesPanel } from "../components/FilesPanel";
@@ -19,6 +16,27 @@ import { ModelPicker } from "../components/ModelPicker";
 import { NewChatHome } from "../components/NewChatHome";
 import { SessionSidebar } from "../components/SessionSidebar";
 import { ThemeToggle } from "../components/ThemeToggle";
+
+// The deliberation surface is ~1700 lines and only reachable at /d/:runId, and the
+// artifact panel is opened by an explicit toggle — neither belongs in the chat's
+// first-paint bundle.
+const DeliberationLaunch = lazy(() =>
+  import("../components/DeliberationLaunch").then((m) => ({ default: m.DeliberationLaunch })),
+);
+const DeliberationView = lazy(() =>
+  import("../components/DeliberationView").then((m) => ({ default: m.DeliberationView })),
+);
+const ArtifactPanel = lazy(() =>
+  import("../components/ArtifactPanel").then((m) => ({ default: m.ArtifactPanel })),
+);
+
+function PanelFallback() {
+  return (
+    <div className="flex flex-1 items-center justify-center text-sm text-gray-500">
+      Loading…
+    </div>
+  );
+}
 import { useAuth } from "../auth/AuthContext";
 import { useBroadcast } from "../hooks/useBroadcast";
 import type { LiveLane } from "../hooks/useBroadcast";
@@ -26,6 +44,7 @@ import { useDismiss } from "../hooks/useDismiss";
 import { usePersonas, usePersonaMutations } from "../hooks/usePersonas";
 import { useProviders } from "../hooks/useProviders";
 import { useTheme } from "../hooks/useTheme";
+import { useTools } from "../hooks/useTools";
 import { seedLaneCollapse } from "../utils/laneCollapse";
 import { forgetLast, rememberLast } from "../utils/lastLocation";
 import { collectDiagrams } from "../utils/messagePdf";
@@ -38,7 +57,7 @@ import {
   useSessions,
 } from "../hooks/useSessions";
 
-const ALL_TOOLS = [
+const ALL_TOOLS_FALLBACK = [
   "web_search",
   "fetch_url",
   "calculator",
@@ -80,6 +99,23 @@ function toServedSets(served: Record<string, string[]>): Record<string, Set<stri
   return Object.fromEntries(Object.entries(served).map(([id, lanes]) => [id, new Set(lanes)]));
 }
 
+/** Turn rows inside one lane's scroll container. */
+function rowsOf(sc: HTMLElement): HTMLElement[] {
+  return Array.from(sc.querySelectorAll<HTMLElement>("[data-turn-id]"));
+}
+
+/** Index of the row currently pinned at the top of a lane's viewport. */
+function currentRowOf(sc: HTMLElement): number {
+  const els = rowsOf(sc);
+  const top = sc.getBoundingClientRect().top;
+  let cur = 0;
+  for (let i = 0; i < els.length; i++) {
+    if (els[i].getBoundingClientRect().top - top <= 4) cur = i;
+    else break;
+  }
+  return cur;
+}
+
 export function ComparePage() {
   const { logout, user } = useAuth();
   const qc = useQueryClient();
@@ -89,6 +125,13 @@ export function ComparePage() {
   const { data: providers = [] } = useProviders();
   const { data: personas = [] } = usePersonas();
   const personaMut = usePersonaMutations();
+  // Sourced from the backend registry so a newly registered tool shows up without a
+  // matching edit here; the constant is only a pre-load fallback.
+  const { data: toolDefs } = useTools();
+  const allTools = useMemo(
+    () => toolDefs?.map((t) => t.name) ?? ALL_TOOLS_FALLBACK,
+    [toolDefs],
+  );
   // The active chat is identified by the URL (/c/:sessionId), so every chat has a
   // permanent, shareable/bookmarkable link. localStorage only remembers the last
   // chat to restore when landing on "/".
@@ -169,7 +212,9 @@ export function ComparePage() {
     servedRef.current = toServedSets(restored.served);
     dispatchingRef.current = new Set();
   }
-  // Persist the queue so navigating to another chat and back doesn't drop it.
+  // Persist the queue so navigating to another chat and back doesn't drop it. This write
+  // stays synchronous on purpose: debouncing it loses the queue when the user navigates
+  // away immediately after queueing.
   useEffect(() => {
     if (!activeId) return;
     const key = queueStorageKey(activeId);
@@ -219,14 +264,20 @@ export function ComparePage() {
       const next = { ...prev };
       if (!width) delete next[laneId];
       else next[laneId] = width;
-      localStorage.setItem("multichat_lane_widths", JSON.stringify(next));
       return next;
     });
   }, []);
-  const resetLayout = useCallback(() => {
-    setLaneWidths({});
-    localStorage.setItem("multichat_lane_widths", "{}");
-  }, []);
+  const resetLayout = useCallback(() => setLaneWidths({}), []);
+
+  // Persisting from inside the state updater was a side effect in a function React may
+  // invoke twice; an effect is the correct place for it.
+  useEffect(() => {
+    try {
+      localStorage.setItem("multichat_lane_widths", JSON.stringify(laneWidths));
+    } catch {
+      // Quota / private-mode failures must never break resizing.
+    }
+  }, [laneWidths]);
 
   // Widths are keyed by lane id in localStorage and outlive the lanes themselves. Drop the
   // orphans, otherwise "Even widths" stays enabled for lanes that no longer exist.
@@ -238,7 +289,6 @@ export function ComparePage() {
         Object.entries(prev).filter(([id]) => ids.has(id)),
       );
       if (Object.keys(next).length === Object.keys(prev).length) return prev;
-      localStorage.setItem("multichat_lane_widths", JSON.stringify(next));
       return next;
     });
   }, [session]);
@@ -688,19 +738,6 @@ export function ComparePage() {
       grid.querySelectorAll<HTMLElement>("[data-lane-scroll]"),
     );
   }, []);
-  const rowsOf = (sc: HTMLElement) =>
-    Array.from(sc.querySelectorAll<HTMLElement>("[data-turn-id]"));
-  // Index of the row currently pinned at the top of a lane's viewport.
-  const currentRowOf = (sc: HTMLElement) => {
-    const els = rowsOf(sc);
-    const top = sc.getBoundingClientRect().top;
-    let cur = 0;
-    for (let i = 0; i < els.length; i++) {
-      if (els[i].getBoundingClientRect().top - top <= 4) cur = i;
-      else break;
-    }
-    return cur;
-  };
   const recomputeNav = useCallback(() => {
     const scs = laneScrollers();
     const count = scs.reduce((m, sc) => Math.max(m, rowsOf(sc).length), 0);
@@ -1135,11 +1172,13 @@ export function ComparePage() {
     return (
       <div className="flex h-full bg-white dark:bg-gray-950">
         {sidebar}
-        {runId === "new" ? (
-          <DeliberationLaunch personaId={search.get("persona")} />
-        ) : (
-          <DeliberationView runId={runId} />
-        )}
+        <Suspense fallback={<PanelFallback />}>
+          {runId === "new" ? (
+            <DeliberationLaunch personaId={search.get("persona")} />
+          ) : (
+            <DeliberationView runId={runId} />
+          )}
+        </Suspense>
         {palette}
       </div>
     );
@@ -1252,9 +1291,9 @@ export function ComparePage() {
                   Enable tool use
                 </label>
                 <div className="mt-1 border-t border-gray-100 pt-1 dark:border-gray-800">
-                  {ALL_TOOLS.map((t) => {
+                  {allTools.map((t) => {
                     const enabled: string[] =
-                      session.tool_config_json?.enabled ?? ALL_TOOLS;
+                      session.tool_config_json?.enabled ?? allTools;
                     const on = enabled.includes(t);
                     return (
                       <label
@@ -1271,16 +1310,16 @@ export function ComparePage() {
                             const next = e.target.checked
                               ? [...new Set([...enabled, t])]
                               : enabled.filter((x) => x !== t);
-                            activeId &&
-                              sm.update.mutate({
-                                id: activeId,
-                                body: {
-                                  tool_config: {
-                                    ...(session.tool_config_json || {}),
-                                    enabled: next,
-                                  },
+                            if (!activeId) return;
+                            sm.update.mutate({
+                              id: activeId,
+                              body: {
+                                tool_config: {
+                                  ...(session.tool_config_json || {}),
+                                  enabled: next,
                                 },
-                              });
+                              },
+                            });
                           }}
                         />
                         {t}
@@ -1760,7 +1799,11 @@ export function ComparePage() {
         )}
       </div>
 
-      {showArtifacts && <ArtifactPanel onClose={() => setShowArtifacts(false)} />}
+      {showArtifacts && (
+        <Suspense fallback={null}>
+          <ArtifactPanel onClose={() => setShowArtifacts(false)} />
+        </Suspense>
+      )}
 
       {palette}
     </div>

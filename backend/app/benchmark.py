@@ -28,7 +28,6 @@ from .broadcast import sse
 from .config import settings
 from .convergence import borda_count, score_round
 from .db import SessionLocal
-from .errors import log_and_describe
 from .deliberation import (
     CRITIQUE_SCHEMA,
     CRITIQUE_SYSTEM,
@@ -45,6 +44,7 @@ from .deliberation import (
     _validate_critique,
     _validate_vote,
 )
+from .errors import log_and_describe
 from .models import Provider
 from .structured import call_structured
 
@@ -227,7 +227,7 @@ async def _council_arm(
         round_outputs: dict[str, dict] = {}
         verdicts: dict[str, str] = {}
         responded: list[str] = []
-        for result, label_map in zip(results, maps):
+        for result, label_map in zip(results, maps, strict=False):
             if not isinstance(result, dict) or not result.get("key"):
                 continue
             key = result["key"]

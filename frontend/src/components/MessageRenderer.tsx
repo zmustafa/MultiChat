@@ -197,3 +197,51 @@ export const MessageRenderer = memo(function MessageRenderer({
     <div className="markdown text-sm text-gray-800 dark:text-gray-100">{body}</div>
   );
 });
+
+/** Below this length the whole answer is cheap to re-parse; splitting isn't worth it. */
+const STREAM_SPLIT_MIN_CHARS = 1500;
+
+/**
+ * Split streamed markdown into a completed prefix and the block still being written.
+ *
+ * Re-parsing the whole accumulated answer on every flush is quadratic in the answer's
+ * length, which is what made long responses jank. Cutting at the last block boundary lets
+ * the prefix hit the memo and leaves only the final block to re-parse.
+ *
+ * The cut must never land inside an open code fence, or the half-written block would
+ * render as prose and then snap back to code — so an unterminated fence pushes the cut
+ * before its opening line.
+ */
+export function splitStreamingMarkdown(content: string): { stable: string; tail: string } {
+  if (content.length < STREAM_SPLIT_MIN_CHARS) return { stable: "", tail: content };
+
+  const fences: number[] = [];
+  const fenceRe = /^```/gm;
+  let match: RegExpExecArray | null;
+  while ((match = fenceRe.exec(content)) !== null) fences.push(match.index);
+
+  // An odd count means the last fence opened a block that hasn't closed yet.
+  const limit = fences.length % 2 === 1 ? fences[fences.length - 1] : content.length;
+  const cut = content.lastIndexOf("\n\n", limit - 1);
+  if (cut <= 0) return { stable: "", tail: content };
+  return { stable: content.slice(0, cut), tail: content.slice(cut) };
+}
+
+/**
+ * Markdown for an answer that is still streaming. Renders the settled blocks and the
+ * in-progress block as two memoized subtrees so each flush only re-parses the latter.
+ */
+export const StreamingMessage = memo(function StreamingMessage({
+  content,
+}: {
+  content: string;
+}) {
+  const { stable, tail } = useMemo(() => splitStreamingMarkdown(content), [content]);
+  if (!stable) return <MessageRenderer content={tail} />;
+  return (
+    <>
+      <MessageRenderer content={stable} />
+      <MessageRenderer content={tail} />
+    </>
+  );
+});

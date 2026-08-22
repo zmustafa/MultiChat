@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session as DbSession, selectinload
+from sqlalchemy.orm import Session as DbSession
+from sqlalchemy.orm import selectinload
 
-from ..broadcast import build_lane_history, multiplex, request_stop, sse
+from ..broadcast import multiplex, request_stop
 from ..config import settings
 from ..db import get_db
 from ..documents import document_prompt_block
-from ..export import export_message_pdf, export_session as build_export_file
+from ..export import export_message_pdf
+from ..export import export_session as build_export_file
 from ..models import (
     Attachment,
     DeliberationRun,
@@ -21,10 +24,12 @@ from ..models import (
     Lane,
     LaneMessage,
     Provider,
-    Session as ChatSession,
     ToolCall,
     Turn,
     User,
+)
+from ..models import (
+    Session as ChatSession,
 )
 from ..providers.base import ChatMessage
 from ..providers.registry import build_provider, pick_default_provider
@@ -39,9 +44,9 @@ from ..schemas import (
     LaneUpdate,
     MessageExportRequest,
     RegenerateRequest,
+    SearchHit,
     SessionCreate,
     SessionDetail,
-    SearchHit,
     SessionListItem,
     SessionUpdate,
     ToolCallOut,
@@ -87,9 +92,47 @@ def _attachment_out(att: Attachment) -> AttachmentOut:
     )
 
 
+def _tool_call_out(tc: ToolCall) -> ToolCallOut:
+    """Serialize a tool call, shortening the result body for the session payload.
+
+    Tool results can be tens of KB each and a busy session holds hundreds of them, but the
+    UI only shows a preview until a card is expanded — so the full body is fetched on
+    demand from ``/tool-calls/{id}`` instead of being shipped with every transcript.
+    """
+    result = tc.result_json
+    truncated = False
+    if isinstance(result, dict):
+        body = result.get("result")
+        if isinstance(body, str) and len(body) > settings.TOOL_RESULT_PREVIEW_CHARS:
+            result = {
+                **result,
+                "result": body[: settings.TOOL_RESULT_PREVIEW_CHARS],
+            }
+            truncated = True
+    return ToolCallOut(
+        id=tc.id,
+        tool_name=tc.tool_name,
+        arguments_json=tc.arguments_json,
+        result_json=result,
+        citations_json=tc.citations_json,
+        status=tc.status,
+        created_at=tc.created_at,
+        result_truncated=truncated,
+    )
+
+
 def _serialize_detail(db: DbSession, s: ChatSession) -> SessionDetail:
-    lanes = sorted(s.lanes, key=lambda x: x.position)
-    turns = sorted(s.turns, key=lambda x: x.order_index)
+    # Explicit eager loads: `s.lanes` / `s.turns` and each turn's attachments would
+    # otherwise lazy-load, costing one query per turn on a long transcript.
+    lanes = db.scalars(
+        select(Lane).where(Lane.session_id == s.id).order_by(Lane.position)
+    ).all()
+    turns = db.scalars(
+        select(Turn)
+        .where(Turn.session_id == s.id)
+        .options(selectinload(Turn.attachments))
+        .order_by(Turn.order_index)
+    ).all()
     messages = db.scalars(
         select(LaneMessage)
         .join(Lane, Lane.id == LaneMessage.lane_id)
@@ -135,7 +178,7 @@ def _serialize_detail(db: DbSession, s: ChatSession) -> SessionDetail:
                 cost_usd=m.cost_usd,
                 error=m.error,
                 created_at=m.created_at,
-                tool_calls=[ToolCallOut.model_validate(tc) for tc in m.tool_calls],
+                tool_calls=[_tool_call_out(tc) for tc in m.tool_calls],
             )
             for m in messages
         ],
@@ -261,52 +304,59 @@ def search_sessions(
     if not term:
         return []
     like = f"%{term}%"
-    # sessions whose title, a turn's content, or a lane message's content matches
-    sess_ids: set[str] = set()
-    for s in db.scalars(
-        select(ChatSession).where(
-            ChatSession.user_id == user.id, ChatSession.title.ilike(like)
-        )
-    ):
-        sess_ids.add(s.id)
-    for t in db.scalars(
-        select(Turn)
+    lowered = term.lower()
+
+    # Matching session ids from titles, turn content and lane-message content in one
+    # round trip. The message branch joins straight through to the session; resolving
+    # each hit's lane with a separate `db.get` used to make this O(matches) queries.
+    title_q = select(ChatSession.id).where(
+        ChatSession.user_id == user.id, ChatSession.title.ilike(like)
+    )
+    turn_q = (
+        select(Turn.session_id)
         .join(ChatSession, ChatSession.id == Turn.session_id)
         .where(ChatSession.user_id == user.id, Turn.content.ilike(like))
-    ):
-        sess_ids.add(t.session_id)
-    for m in db.scalars(
-        select(LaneMessage)
-        .join(Lane, Lane.id == LaneMessage.lane_id)
+    )
+    message_q = (
+        select(Lane.session_id)
+        .join(LaneMessage, LaneMessage.lane_id == Lane.id)
         .join(ChatSession, ChatSession.id == Lane.session_id)
         .where(ChatSession.user_id == user.id, LaneMessage.content.ilike(like))
-    ):
-        lane = db.get(Lane, m.lane_id)
-        if lane:
-            sess_ids.add(lane.session_id)
+    )
+    sess_ids = set(db.scalars(title_q.union(turn_q, message_q)).all())
+    if not sess_ids:
+        return []
+
+    rows = db.execute(
+        select(ChatSession.id, ChatSession.title, ChatSession.updated_at).where(
+            ChatSession.id.in_(sess_ids)
+        )
+    ).all()
+
+    # Earliest matching turn per session, instead of loading every turn of every hit and
+    # scanning them in Python.
+    snippets: dict[str, str] = {}
+    for session_id, content in db.execute(
+        select(Turn.session_id, Turn.content)
+        .where(Turn.session_id.in_(sess_ids), Turn.content.ilike(like))
+        .order_by(Turn.session_id, Turn.order_index)
+    ).all():
+        snippets.setdefault(session_id, content or "")
 
     hits: list[SearchHit] = []
-    for sid in sess_ids:
-        s = db.get(ChatSession, sid)
-        if not s:
-            continue
-        # build a small snippet from the first matching turn
-        snippet = ""
-        for t in sorted(s.turns, key=lambda x: x.order_index):
-            if term.lower() in (t.content or "").lower():
-                snippet = t.content
-                break
-        if not snippet and term.lower() in (s.title or "").lower():
-            snippet = s.title
-        idx = snippet.lower().find(term.lower())
+    for sid, title, updated_at in rows:
+        snippet = snippets.get(sid) or ""
+        if not snippet and lowered in (title or "").lower():
+            snippet = title
+        idx = snippet.lower().find(lowered)
         if idx > 40:
             snippet = "…" + snippet[idx - 30 :]
         hits.append(
             SearchHit(
-                session_id=s.id,
-                title=s.title,
+                session_id=sid,
+                title=title,
                 snippet=snippet[:160],
-                updated_at=s.updated_at,
+                updated_at=updated_at,
             )
         )
     hits.sort(key=lambda h: h.updated_at, reverse=True)
@@ -344,14 +394,65 @@ def create_session(
     return _serialize_detail(db, s)
 
 
+def _detail_etag(db: DbSession, s: ChatSession) -> str:
+    """Cheap version stamp for a session's transcript.
+
+    The frequent refetches (one per lane completion, plus background polling) almost
+    always return an unchanged transcript, so a two-column aggregate lets them answer 304
+    instead of re-serialising hundreds of KB of markdown.
+    """
+    stamp = db.execute(
+        select(func.count(LaneMessage.id), func.max(LaneMessage.created_at))
+        .join(Lane, Lane.id == LaneMessage.lane_id)
+        .where(Lane.session_id == s.id)
+    ).one()
+    raw = f"{s.id}:{s.updated_at}:{stamp[0]}:{stamp[1]}"
+    return '"' + hashlib.sha1(raw.encode()).hexdigest() + '"'
+
+
 @router.get("/{session_id}", response_model=SessionDetail)
 def get_session(
     session_id: str,
+    request: Request,
+    response: Response,
     user: User = Depends(current_user),
     db: DbSession = Depends(get_db),
-) -> SessionDetail:
+):
     s = _get_session(db, user, session_id)
+    etag = _detail_etag(db, s)
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    response.headers["ETag"] = etag
     return _serialize_detail(db, s)
+
+
+@router.get("/{session_id}/tool-calls/{tool_call_id}")
+def get_tool_call(
+    session_id: str,
+    tool_call_id: str,
+    user: User = Depends(current_user),
+    db: DbSession = Depends(get_db),
+) -> dict:
+    """The untruncated body of one tool call (the session payload ships a preview)."""
+    s = _get_session(db, user, session_id)
+    tc = db.get(ToolCall, tool_call_id)
+    if not tc:
+        raise HTTPException(status_code=404, detail="Tool call not found")
+    owner = db.scalar(
+        select(Lane.session_id)
+        .join(LaneMessage, LaneMessage.lane_id == Lane.id)
+        .where(LaneMessage.id == tc.lane_message_id)
+    )
+    if owner != s.id:
+        raise HTTPException(status_code=404, detail="Tool call not found")
+    return {
+        "id": tc.id,
+        "tool_name": tc.tool_name,
+        "arguments_json": tc.arguments_json,
+        "result_json": tc.result_json,
+        "citations_json": tc.citations_json,
+        "status": tc.status,
+    }
 
 
 def _clone_session(

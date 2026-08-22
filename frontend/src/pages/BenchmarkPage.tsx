@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { API_BASE, getToken, streamSSE } from "../api/client";
+import { streamSSE } from "../api/client";
 import {
   ARM_LABELS,
   BENCH_ARMS,

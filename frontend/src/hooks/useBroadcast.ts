@@ -28,6 +28,17 @@ export type LiveMap = Record<string, LiveLane>;
 
 /** Minimum gap between streamed-text state flushes (see flushChunks). */
 const STREAM_FLUSH_MS = 100;
+/**
+ * Long answers cost more per flush even with the split renderer (the in-progress block
+ * grows, and every lane re-renders), so the cadence relaxes as the answer gets longer.
+ * Still well inside "looks like live typing" at the top end.
+ */
+const STREAM_FLUSH_MAX_MS = 300;
+function flushIntervalFor(chars: number): number {
+  if (chars < 8000) return STREAM_FLUSH_MS;
+  if (chars < 25000) return 180;
+  return STREAM_FLUSH_MAX_MS;
+}
 
 export function useBroadcast(sessionId: string | null, onComplete?: () => void) {
   const [live, setLive] = useState<LiveMap>({});
@@ -45,6 +56,7 @@ export function useBroadcast(sessionId: string | null, onComplete?: () => void) 
   const rafRef = useRef<number | null>(null);
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastFlushRef = useRef(0);
+  const flushIntervalRef = useRef(STREAM_FLUSH_MS);
 
   // When the active session changes (switching chats or opening a brand-new chat), tear
   // down any client-side streams from the previous session and clear their state. The
@@ -66,6 +78,7 @@ export function useBroadcast(sessionId: string | null, onComplete?: () => void) 
       flushTimerRef.current = null;
     }
     chunkBufRef.current = {};
+    flushIntervalRef.current = STREAM_FLUSH_MS;
   }, [sessionId]);
 
   // Chunk coalescing: token chunks can arrive dozens of times per second per lane. Applying
@@ -93,12 +106,16 @@ export function useBroadcast(sessionId: string | null, onComplete?: () => void) 
     chunkBufRef.current = {};
     setLive((prev) => {
       const next = { ...prev };
+      let longest = 0;
       for (const id of ids) {
         const cur =
           next[id] ||
           ({ laneId: id, status: "streaming", content: "", toolCalls: [] } as LiveLane);
-        next[id] = { ...cur, content: cur.content + buf[id] };
+        const content = cur.content + buf[id];
+        next[id] = { ...cur, content };
+        if (content.length > longest) longest = content.length;
       }
+      flushIntervalRef.current = flushIntervalFor(longest);
       return next;
     });
   }, []);
@@ -107,11 +124,12 @@ export function useBroadcast(sessionId: string | null, onComplete?: () => void) 
   // passed since the last one, otherwise on a timer for the remainder of the interval.
   const scheduleFlush = useCallback(() => {
     if (rafRef.current != null || flushTimerRef.current != null) return;
+    const interval = flushIntervalRef.current;
     const elapsed = Date.now() - lastFlushRef.current;
-    if (elapsed >= STREAM_FLUSH_MS) {
+    if (elapsed >= interval) {
       rafRef.current = requestAnimationFrame(flushChunks);
     } else {
-      flushTimerRef.current = setTimeout(flushChunks, STREAM_FLUSH_MS - elapsed);
+      flushTimerRef.current = setTimeout(flushChunks, interval - elapsed);
     }
   }, [flushChunks]);
 

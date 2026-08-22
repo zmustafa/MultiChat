@@ -17,7 +17,6 @@ from sqlalchemy.orm import Session as DbSession
 
 from .models import Persona, Provider, User
 
-
 # ---------------------------------------------------------------------------
 # Catalog. Each entry ships to end users. Lanes reference model *names* only.
 # ---------------------------------------------------------------------------

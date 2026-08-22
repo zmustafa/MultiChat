@@ -14,7 +14,8 @@ import itertools
 import os
 import re
 import unicodedata
-from typing import Any, Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from typing import Any
 from xml.sax.saxutils import escape
 
 # ---------------------------------------------------------------------------
@@ -891,7 +892,7 @@ def _fit_col_widths(
         return [w * content_width / total_min for w in mins]
     slack = content_width - total_min
     total_weight = sum(weights) or 1.0
-    return [m + slack * w / total_weight for m, w in zip(mins, weights)]
+    return [m + slack * w / total_weight for m, w in zip(mins, weights, strict=False)]
 
 
 def markdown_pdf_flowables(

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from .base import Tool, ToolContext, ToolDef, ToolResult
 from ..mcp.workiq import workiq
+from .base import Tool, ToolContext, ToolDef, ToolResult
 
 
 class WorkIqTool(Tool):

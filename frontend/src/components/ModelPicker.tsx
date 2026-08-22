@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Provider, LaneRole } from "../api/types";
 
 interface Props {
@@ -13,7 +13,8 @@ export function ModelPicker({ providers, onAdd, allowJudge }: Props) {
   const [role, setRole] = useState<LaneRole>("responder");
 
   const provider = providers.find((p) => p.id === providerId);
-  const models = provider?.models || [];
+  // Stable identity: a fresh [] on each render would re-run the effects below every time.
+  const models = useMemo(() => provider?.models ?? [], [provider]);
 
   // Default the provider selection once providers load / change.
   useEffect(() => {

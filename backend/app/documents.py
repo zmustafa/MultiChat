@@ -4,8 +4,6 @@ import csv
 import io
 import os
 
-from .config import settings
-
 # Per-document inline injection budget (characters) when stuffing extracted text
 # directly into the model prompt. Larger docs are truncated; the model can call the
 # read_document tool to retrieve the full text.

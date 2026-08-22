@@ -6,7 +6,7 @@ import { addArtifact } from "../hooks/useArtifacts";
 import { isLaneCollapsed, setLaneCollapsedState } from "../utils/laneCollapse";
 import { contentBadges } from "../utils/contentMeta";
 import type { QueuedMessage } from "./LaneComposer";
-import { MessageRenderer, CodeFoldContext } from "./MessageRenderer";
+import { MessageRenderer, StreamingMessage, CodeFoldContext } from "./MessageRenderer";
 import { downloadMessagePdf } from "../utils/messagePdf";
 import { ToolCallCard } from "./ToolCallCard";
 
@@ -555,7 +555,6 @@ export function LaneColumn({
   messages,
   turns,
   live,
-  streaming,
   isBest,
   onStop,
   onRegenerate,
@@ -658,16 +657,17 @@ export function LaneColumn({
   // the NEW answer — so we can keep showing the freshly streamed text until it does,
   // instead of briefly flashing the STALE old answer during the ~250ms refetch window.
   const regenBaselineRef = useRef<Map<string, string>>(new Map());
+  // Depend on "is the live answer still empty" rather than on the content itself: the
+  // snapshot is only wanted at the start of a generation, and depending on `live.content`
+  // would re-run this on every streamed flush for no reason.
+  const liveIsEmpty = (live?.content ?? "") === "";
   useEffect(() => {
     const t = live?.turnId;
     if (!t) return;
-    if (
-      (live.status === "streaming" || live.status === "queued") &&
-      (live.content ?? "") === ""
-    ) {
+    if ((live.status === "streaming" || live.status === "queued") && liveIsEmpty) {
       regenBaselineRef.current.set(t, byTurn.get(t)?.content ?? "");
     }
-  }, [live?.turnId, live?.status, byTurn]);
+  }, [live?.turnId, live?.status, liveIsEmpty, byTurn]);
 
   // Whether this lane has any fenced code blocks — gates the "collapse/expand all code" btn.
   const hasCode = useMemo(
@@ -1061,7 +1061,11 @@ export function LaneColumn({
                               : "Request sent · awaiting response…")}
                         </div>
                       )}
-                      <MessageRenderer content={liveHere.content || "…"} />
+                      {liveHere.status === "streaming" ? (
+                        <StreamingMessage content={liveHere.content || "…"} />
+                      ) : (
+                        <MessageRenderer content={liveHere.content || "…"} />
+                      )}
                       {liveHere.toolCalls.length > 0 && (
                         <ToolCallCard
                           key={
@@ -1201,7 +1205,11 @@ export function LaneColumn({
                 {live.toolCalls.map((tc) => (
                   <ToolCallCard key={tc.tool_call_id} call={tc} />
                 ))}
-                <MessageRenderer content={live.content || "…"} />
+                {live.status === "streaming" ? (
+                  <StreamingMessage content={live.content || "…"} />
+                ) : (
+                  <MessageRenderer content={live.content || "…"} />
+                )}
               </div>
             )}
             {live?.status === "error" && (

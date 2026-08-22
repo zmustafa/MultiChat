@@ -4,7 +4,7 @@ import io
 import json
 import os
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
@@ -22,12 +22,14 @@ from .models import (
     LaneMessage,
     Persona,
     Provider,
-    Session as ChatSession,
     Snippet,
     ToolCall,
     ToolCredential,
     Turn,
     User,
+)
+from .models import (
+    Session as ChatSession,
 )
 from .tools.artifacts import GENERATED_SUBDIR
 
@@ -297,7 +299,7 @@ def build_export(db: DbSession, user: User) -> bytes:
     manifest = {
         "version": EXPORT_VERSION,
         "app": "MultiChat",
-        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "exported_at": datetime.now(UTC).isoformat(),
         "user_email": user.email,
         "counts": {k: len(v) for k, v in data.items() if isinstance(v, list)},
         "contains_secrets": True,

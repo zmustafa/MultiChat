@@ -7,7 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
 from .config import settings
-from .models import Lane, LaneMessage, Persona, Provider, Session as ChatSession, Turn
+from .models import Lane, LaneMessage, Persona, Provider, Turn
+from .models import Session as ChatSession
 from .tools.artifacts import generated_dir, new_stored_name, safe_download_name
 
 _MIME = {
@@ -508,7 +509,8 @@ def export_deliberation_pdf(db: DbSession, run, diagrams=None) -> tuple[str, str
     from reportlab.platypus.flowables import HRFlowable
 
     from .markdown_render import markdown_pdf_flowables, pdf_fonts, pdf_safe
-    from .models import DeliberationStep, Session as ChatSession
+    from .models import DeliberationStep
+    from .models import Session as ChatSession
 
     fonts = pdf_fonts()
     session = db.get(ChatSession, run.session_id)

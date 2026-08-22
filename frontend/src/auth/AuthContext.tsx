@@ -5,7 +5,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { apiFetch, getToken, setToken } from "../api/client";
+import { apiFetch, clearEtagCache, getToken, setToken } from "../api/client";
 import type { User } from "../api/types";
 
 interface AuthState {
@@ -46,6 +46,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   function logout() {
     setToken(null);
     setUser(null);
+    clearEtagCache();
   }
 
   async function refreshUser() {

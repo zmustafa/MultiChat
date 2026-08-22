@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     Boolean,
@@ -22,7 +22,7 @@ def _uuid() -> str:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class User(Base):
@@ -37,10 +37,10 @@ class User(Base):
     new_chat_use_default_persona: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(default=_now)
 
-    providers: Mapped[list["Provider"]] = relationship(
+    providers: Mapped[list[Provider]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
-    sessions: Mapped[list["Session"]] = relationship(
+    sessions: Mapped[list[Session]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
 
@@ -66,7 +66,7 @@ class Provider(Base):
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(default=_now)
 
-    user: Mapped["User"] = relationship(back_populates="providers")
+    user: Mapped[User] = relationship(back_populates="providers")
 
 
 class Session(Base):
@@ -89,11 +89,11 @@ class Session(Base):
     created_at: Mapped[datetime] = mapped_column(default=_now)
     updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
 
-    user: Mapped["User"] = relationship(back_populates="sessions")
-    lanes: Mapped[list["Lane"]] = relationship(
+    user: Mapped[User] = relationship(back_populates="sessions")
+    lanes: Mapped[list[Lane]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
     )
-    turns: Mapped[list["Turn"]] = relationship(
+    turns: Mapped[list[Turn]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
     )
 
@@ -115,8 +115,8 @@ class Lane(Base):
     hidden: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(default=_now)
 
-    session: Mapped["Session"] = relationship(back_populates="lanes")
-    messages: Mapped[list["LaneMessage"]] = relationship(
+    session: Mapped[Session] = relationship(back_populates="lanes")
+    messages: Mapped[list[LaneMessage]] = relationship(
         back_populates="lane", cascade="all, delete-orphan"
     )
 
@@ -133,11 +133,11 @@ class Turn(Base):
     target_lane_ids_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=_now)
 
-    session: Mapped["Session"] = relationship(back_populates="turns")
-    messages: Mapped[list["LaneMessage"]] = relationship(
+    session: Mapped[Session] = relationship(back_populates="turns")
+    messages: Mapped[list[LaneMessage]] = relationship(
         back_populates="turn", cascade="all, delete-orphan"
     )
-    attachments: Mapped[list["Attachment"]] = relationship(
+    attachments: Mapped[list[Attachment]] = relationship(
         back_populates="turn", cascade="all, delete-orphan"
     )
 
@@ -162,9 +162,9 @@ class LaneMessage(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=_now)
 
-    lane: Mapped["Lane"] = relationship(back_populates="messages")
-    turn: Mapped["Turn"] = relationship(back_populates="messages")
-    tool_calls: Mapped[list["ToolCall"]] = relationship(
+    lane: Mapped[Lane] = relationship(back_populates="messages")
+    turn: Mapped[Turn] = relationship(back_populates="messages")
+    tool_calls: Mapped[list[ToolCall]] = relationship(
         back_populates="lane_message", cascade="all, delete-orphan"
     )
 
@@ -187,7 +187,7 @@ class Attachment(Base):
     extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=_now)
 
-    turn: Mapped["Turn"] = relationship(back_populates="attachments")
+    turn: Mapped[Turn] = relationship(back_populates="attachments")
 
 
 class ToolCall(Base):
@@ -204,7 +204,7 @@ class ToolCall(Base):
     status: Mapped[str] = mapped_column(String, default="running")
     created_at: Mapped[datetime] = mapped_column(default=_now)
 
-    lane_message: Mapped["LaneMessage"] = relationship(back_populates="tool_calls")
+    lane_message: Mapped[LaneMessage] = relationship(back_populates="tool_calls")
 
 
 class GeneratedFile(Base):
@@ -407,7 +407,7 @@ class DeliberationRun(Base):
     created_at: Mapped[datetime] = mapped_column(default=_now)
     updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
 
-    steps: Mapped[list["DeliberationStep"]] = relationship(
+    steps: Mapped[list[DeliberationStep]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
     )
 
@@ -445,7 +445,7 @@ class DeliberationStep(Base):
     usage_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=_now)
 
-    run: Mapped["DeliberationRun"] = relationship(back_populates="steps")
+    run: Mapped[DeliberationRun] = relationship(back_populates="steps")
 
 
 

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DbSession
 
 from ..db import get_db
@@ -11,10 +11,12 @@ from ..models import (
     Lane,
     LaneMessage,
     Provider,
-    Session as ChatSession,
     ToolCall,
     Turn,
     User,
+)
+from ..models import (
+    Session as ChatSession,
 )
 from ..security import current_user
 
@@ -114,7 +116,7 @@ def _kind(tool_name: str) -> str:
 
 
 def _as_utc(ts: datetime) -> datetime:
-    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
 
 
 def _blank() -> dict:
@@ -131,6 +133,30 @@ def _blank() -> dict:
     }
 
 
+def _accumulate(
+    agg: dict,
+    *,
+    is_error: bool,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cost: float,
+    latency_ms: int | None,
+) -> None:
+    """Fold one response into an aggregate bucket."""
+    agg["responses"] += 1
+    if is_error:
+        agg["errors"] += 1
+    agg["completion_tokens"] += completion_tokens
+    agg["prompt_tokens"] += prompt_tokens
+    agg["cost"] += cost
+    if latency_ms:
+        agg["latency_ms_sum"] += latency_ms
+        agg["latency_count"] += 1
+        if completion_tokens:
+            agg["tokps_sum"] += completion_tokens / (latency_ms / 1000)
+            agg["tokps_count"] += 1
+
+
 @router.get("/usage")
 def usage(
     days: int = 7,
@@ -140,26 +166,37 @@ def usage(
     """Aggregate usage across the user's sessions within the last ``days`` (0 = all time):
     per-model / per-provider / daily response stats plus tool-call, chat, token/cost,
     activity time-series and punch-card breakdowns for the Insights dashboard."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cutoff = now - timedelta(days=days) if days and days > 0 else None
-
-    def _in_range(ts: datetime | None) -> bool:
-        if cutoff is None or ts is None:
-            return True
-        return _as_utc(ts) >= cutoff
+    # SQLite stores these as naive UTC, so the bound must be naive too.
+    sql_cutoff = cutoff.replace(tzinfo=None) if cutoff else None
 
     # ---- Assistant responses (usage_json / latency / errors) ----
-    rows = db.execute(
-        select(LaneMessage, Lane.model, Lane.provider_id, Lane.session_id)
+    # Only the aggregate columns: selecting whole LaneMessage entities pulled every
+    # answer's markdown (megabytes) across the wire just to read usage_json.
+    response_q = (
+        select(
+            LaneMessage.usage_json,
+            LaneMessage.latency_ms,
+            LaneMessage.error,
+            LaneMessage.created_at,
+            Lane.model,
+            Lane.provider_id,
+            Lane.session_id,
+        )
         .join(Lane, Lane.id == LaneMessage.lane_id)
         .join(ChatSession, ChatSession.id == Lane.session_id)
         .where(ChatSession.user_id == user.id, LaneMessage.role == "assistant")
-    ).all()
+    )
+    if sql_cutoff is not None:
+        response_q = response_q.where(LaneMessage.created_at >= sql_cutoff)
+    rows = db.execute(response_q).all()
 
-    provider_names = {
-        p.id: p.name
-        for p in db.scalars(select(Provider).where(Provider.user_id == user.id)).all()
-    }
+    provider_names = dict(
+        db.execute(
+            select(Provider.id, Provider.name).where(Provider.user_id == user.id)
+        ).all()
+    )
 
     by_model: dict[str, dict] = {}
     by_provider: dict[str, dict] = {}
@@ -172,35 +209,26 @@ def usage(
     session_events: dict[str, int] = {}
     punch: dict[str, int] = {}  # "weekday:hour" -> count
 
-    for m, model, provider_id, session_id in rows:
-        if not _in_range(m.created_at):
-            continue
-        usage_json = m.usage_json or {}
+    for usage_json, latency_ms, err, created_at, model, provider_id, session_id in rows:
+        usage_json = usage_json or {}
         ct = int(usage_json.get("completion_tokens") or 0)
         pt = int(usage_json.get("prompt_tokens") or 0)
-        is_err = bool(m.error)
+        is_err = bool(err)
         c = _cost(model, pt, ct)
+        stats = {
+            "is_error": is_err,
+            "prompt_tokens": pt,
+            "completion_tokens": ct,
+            "cost": c,
+            "latency_ms": latency_ms,
+        }
 
-        def apply(agg: dict) -> None:
-            agg["responses"] += 1
-            if is_err:
-                agg["errors"] += 1
-            agg["completion_tokens"] += ct
-            agg["prompt_tokens"] += pt
-            agg["cost"] += c
-            if m.latency_ms:
-                agg["latency_ms_sum"] += m.latency_ms
-                agg["latency_count"] += 1
-            if ct and m.latency_ms:
-                agg["tokps_sum"] += ct / (m.latency_ms / 1000)
-                agg["tokps_count"] += 1
-
-        apply(by_model.setdefault(model, _blank()))
+        _accumulate(by_model.setdefault(model, _blank()), **stats)
         pname = provider_names.get(provider_id, "unknown")
-        apply(by_provider.setdefault(pname, _blank()))
-        created = _as_utc(m.created_at or now)
-        apply(by_day.setdefault(created.strftime("%Y-%m-%d"), _blank()))
-        apply(totals)
+        _accumulate(by_provider.setdefault(pname, _blank()), **stats)
+        created = _as_utc(created_at or now)
+        _accumulate(by_day.setdefault(created.strftime("%Y-%m-%d"), _blank()), **stats)
+        _accumulate(totals, **stats)
 
         prompt_total += pt
         completion_total += ct
@@ -216,13 +244,16 @@ def usage(
         )
 
     # ---- Tool calls ----
-    tool_rows = db.execute(
+    tool_q = (
         select(ToolCall.tool_name, ToolCall.status, ToolCall.created_at, Lane.session_id)
         .join(LaneMessage, LaneMessage.id == ToolCall.lane_message_id)
         .join(Lane, Lane.id == LaneMessage.lane_id)
         .join(ChatSession, ChatSession.id == Lane.session_id)
         .where(ChatSession.user_id == user.id)
-    ).all()
+    )
+    if sql_cutoff is not None:
+        tool_q = tool_q.where(ToolCall.created_at >= sql_cutoff)
+    tool_rows = db.execute(tool_q).all()
 
     tools_total = 0
     tool_by_status: dict[str, int] = {}
@@ -233,8 +264,6 @@ def usage(
     tool_done = 0
 
     for tool_name, status, created_at, session_id in tool_rows:
-        if not _in_range(created_at):
-            continue
         tools_total += 1
         st = status or "running"
         tool_by_status[st] = tool_by_status.get(st, 0) + 1
@@ -256,26 +285,27 @@ def usage(
 
     # ---- Chats + user messages (turns) ----
     session_meta = {
-        s.id: s
-        for s in db.scalars(
-            select(ChatSession).where(
+        sid: (title, updated_at)
+        for sid, title, updated_at in db.execute(
+            select(ChatSession.id, ChatSession.title, ChatSession.updated_at).where(
                 ChatSession.user_id == user.id,
                 ChatSession.trashed == False,  # noqa: E712
             )
         ).all()
     }
-    turn_rows = db.execute(
-        select(Turn.session_id, Turn.created_at)
+    turn_q = (
+        select(Turn.session_id, func.count(Turn.id))
         .join(ChatSession, ChatSession.id == Turn.session_id)
         .where(ChatSession.user_id == user.id)
-    ).all()
+        .group_by(Turn.session_id)
+    )
+    if sql_cutoff is not None:
+        turn_q = turn_q.where(Turn.created_at >= sql_cutoff)
     messages_total = 0
-    for session_id, created_at in turn_rows:
-        if not _in_range(created_at):
-            continue
-        messages_total += 1
+    for session_id, count in db.execute(turn_q).all():
+        messages_total += count
         if session_id:
-            session_events[session_id] = session_events.get(session_id, 0) + 1
+            session_events[session_id] = session_events.get(session_id, 0) + count
 
     chats_total = sum(1 for sid in session_meta if session_events.get(sid, 0) > 0)
 
@@ -313,12 +343,12 @@ def usage(
             "messages": 0,
             "tool_calls": 0,
         }
-    for m, _model, _pid, _sid in rows:
-        if m.created_at and (now - _as_utc(m.created_at)) <= timedelta(hours=24):
-            key = _as_utc(m.created_at).strftime("%Y-%m-%d %H")
+    for _usage, _latency, _err, created_at, _model, _pid, _sid in rows:
+        if created_at and (now - _as_utc(created_at)) <= timedelta(hours=24):
+            key = _as_utc(created_at).strftime("%Y-%m-%d %H")
             if key in buckets:
                 buckets[key]["messages"] += 1
-    for tool_name, status, created_at, _sid in tool_rows:
+    for _tool_name, _status, created_at, _sid in tool_rows:
         if created_at and (now - _as_utc(created_at)) <= timedelta(hours=24):
             key = _as_utc(created_at).strftime("%Y-%m-%d %H")
             if key in buckets:
@@ -348,10 +378,10 @@ def usage(
         (
             {
                 "id": sid,
-                "title": session_meta[sid].title if sid in session_meta else "Untitled",
+                "title": session_meta[sid][0] if sid in session_meta else "Untitled",
                 "events": events,
-                "updated_at": session_meta[sid].updated_at.isoformat()
-                if sid in session_meta and session_meta[sid].updated_at
+                "updated_at": session_meta[sid][1].isoformat()
+                if sid in session_meta and session_meta[sid][1]
                 else None,
             }
             for sid, events in session_events.items()

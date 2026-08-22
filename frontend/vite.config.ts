@@ -12,11 +12,12 @@ export default defineConfig({
       output: {
         // Split heavy vendor libraries out of the main chunk so first paint is lighter and
         // these rarely-changing bundles cache independently. (mermaid is loaded via dynamic
-        // import(), so it and its diagram engines already become their own lazy chunks.)
+        // import(), so it and its diagram engines already become their own lazy chunks —
+        // katex arrives that way too, so it must NOT be named here or it would be hoisted
+        // into a chunk the entry preloads.)
         manualChunks(id) {
           if (!id.includes("node_modules")) return;
           if (id.includes("highlight.js")) return "vendor-highlight";
-          if (id.includes("katex")) return "vendor-katex";
           if (
             /react-markdown|remark-|rehype-|micromark|mdast|hast-|unist-|unified|property-information|vfile/.test(
               id,

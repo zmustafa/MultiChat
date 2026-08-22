@@ -9,8 +9,8 @@ result so the UI can render a live diagnostics panel:
 from __future__ import annotations
 
 import asyncio
-import socket
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session as DbSession

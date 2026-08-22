@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import os
 import random
 import time
@@ -57,8 +56,10 @@ from .models import (
     Lane,
     LaneMessage,
     Provider,
-    Session as ChatSession,
     Turn,
+)
+from .models import (
+    Session as ChatSession,
 )
 from .structured import call_structured
 
@@ -943,7 +944,7 @@ async def _run_vote(
     )
 
     ballots: dict[str, list[str]] = {}
-    for voter, result in zip(entries, results):
+    for voter, result in zip(entries, results, strict=False):
         if result.get("ok"):
             ranking = result["output"].get("ranking") or []
             ballots[voter["lane_id"]] = [str(r) for r in ranking if isinstance(r, str)]
@@ -1031,7 +1032,7 @@ async def _drive(run_id: str, hub: _Hub) -> None:
             concurrency,
         )
         calls += len(results)
-        for participant, result in zip(panel, results):
+        for participant, result in zip(panel, results, strict=False):
             if result.get("ok"):
                 outputs[participant["lane_id"]] = result["output"]
         # The barrier: nothing is released into round 1 until every draft is in.
@@ -1116,7 +1117,7 @@ async def _drive(run_id: str, hub: _Hub) -> None:
             verdicts: dict[str, str] = {}
             round_outputs: dict[str, dict] = {}
             job_participants = [p for p in active if p["lane_id"] in label_maps]
-            for participant, result in zip(job_participants, results):
+            for participant, result in zip(job_participants, results, strict=False):
                 lane_id = participant["lane_id"]
                 if not result.get("ok"):
                     # An errored panelist leaves the denominator rather than blocking the

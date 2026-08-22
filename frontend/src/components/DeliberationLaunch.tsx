@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { apiFetch } from "../api/client";
 import type { Attachment } from "../api/types";
 import { useProviders } from "../hooks/useProviders";
 import { usePersonas } from "../hooks/usePersonas";
