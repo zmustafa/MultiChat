@@ -51,7 +51,7 @@ jobs:
         run: ruff check app tests
       # Includes the query-count budgets, which fail if an N+1 is reintroduced.
       - name: Test
-        run: pytest -q
+        run: python -m pytest -q
 
   audit:
     name: Dependency audit
