@@ -71,6 +71,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install pip-audit
           pip-audit -r backend/requirements.txt
+          pip-audit -r backend/requirements-dev.txt
       - name: Audit npm dependencies
         working-directory: frontend
         run: |

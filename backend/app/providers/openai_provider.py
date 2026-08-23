@@ -9,7 +9,9 @@ streaming, tool-call fragment accumulation and usage for us.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import secrets
 from collections import OrderedDict
 from collections.abc import AsyncIterator
 from typing import Any
@@ -88,6 +90,15 @@ _PROVIDER_NAMES = {
 # therefore yields a new entry and the stale one is evicted by the LRU.
 _MAX_CACHED_CLIENTS = 32
 _client_cache: OrderedDict[str, AsyncOpenAI | AsyncAzureOpenAI] = OrderedDict()
+_CREDENTIAL_FINGERPRINT_KEY = secrets.token_bytes(32)
+
+
+def _credential_fingerprint(credential: str) -> str:
+    return hmac.new(
+        _CREDENTIAL_FINGERPRINT_KEY,
+        credential.encode(),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def _client_key(parts: dict[str, Any]) -> str:
@@ -169,7 +180,7 @@ class OpenAIProvider(LLMProvider):
                     "kind": "azure",
                     "endpoint": base_url,
                     "version": api_version or "2024-10-21",
-                    "auth": hashlib.sha256((api_key or "").encode()).hexdigest(),
+                    "auth": _credential_fingerprint(api_key or ""),
                     "headers": default_headers or {},
                 }
             )
@@ -188,7 +199,7 @@ class OpenAIProvider(LLMProvider):
                 {
                     "kind": "openai",
                     "base": base_url,
-                    "auth": hashlib.sha256((api_key or "").encode()).hexdigest(),
+                    "auth": _credential_fingerprint(api_key or ""),
                     "headers": default_headers or {},
                 }
             )
