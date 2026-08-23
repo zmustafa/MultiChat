@@ -128,6 +128,7 @@ export interface SessionDetail {
   id: string;
   title: string;
   system_prompt: string | null;
+  notice: string | null;
   tools_enabled: boolean;
   tool_config_json: Record<string, any>;
   folder_id: string | null;
@@ -175,7 +176,9 @@ export interface Persona {
   name: string;
   description: string | null;
   system_prompt: string | null;
+  notice?: string | null;
   tools_enabled: boolean;
+  tool_config?: Record<string, unknown> | null;
   is_default?: boolean;
   lanes: PersonaLane[];
   deliberation?: DeliberationPreset | null;

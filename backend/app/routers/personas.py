@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
 from ..db import get_db
-from ..models import Persona, Provider, User
+from ..models import Persona, Provider, StarterPersonaState, User
 from ..providers.registry import build_provider
 from ..schemas import (
     DeliberationPreset,
@@ -27,7 +27,9 @@ def _serialize(p: Persona) -> PersonaOut:
         name=p.name,
         description=p.description,
         system_prompt=p.system_prompt,
+        notice=p.notice,
         tools_enabled=bool(p.tools_enabled),
+        tool_config=p.tool_config_json,
         is_default=bool(p.is_default),
         lanes=[PersonaLane(**lane) for lane in (p.lanes_json or [])],
         deliberation=(
@@ -68,7 +70,9 @@ def create_persona(
         name=payload.name,
         description=payload.description,
         system_prompt=payload.system_prompt,
+        notice=payload.notice,
         tools_enabled=payload.tools_enabled,
+        tool_config_json=payload.tool_config,
         lanes_json=[lane.model_dump() for lane in payload.lanes],
         deliberation_json=(
             payload.deliberation.model_dump() if payload.deliberation else None
@@ -194,8 +198,12 @@ def update_persona(
         p.description = payload.description
     if payload.system_prompt is not None:
         p.system_prompt = payload.system_prompt
+    if payload.notice is not None:
+        p.notice = payload.notice
     if payload.tools_enabled is not None:
         p.tools_enabled = payload.tools_enabled
+    if payload.tool_config is not None:
+        p.tool_config_json = payload.tool_config
     if payload.lanes is not None:
         p.lanes_json = [lane.model_dump() for lane in payload.lanes]
     if payload.deliberation is not None:
@@ -241,5 +249,14 @@ def delete_persona(
     db: DbSession = Depends(get_db),
 ):
     p = _get_owned(db, user, persona_id)
+    state = db.scalar(
+        select(StarterPersonaState).where(
+            StarterPersonaState.user_id == user.id,
+            StarterPersonaState.persona_id == p.id,
+        )
+    )
+    if state is not None:
+        state.persona_id = None
+        state.dismissed = True
     db.delete(p)
     db.commit()

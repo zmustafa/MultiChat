@@ -138,6 +138,7 @@ def _migrate() -> None:
             "new_chat_use_default_persona": "BOOLEAN DEFAULT 0",
         },
         "sessions": {
+            "notice": "TEXT",
             "folder_id": "VARCHAR",
             "pinned": "BOOLEAN DEFAULT 0",
             "archived": "BOOLEAN DEFAULT 0",
@@ -146,6 +147,8 @@ def _migrate() -> None:
         },
         "personas": {
             "tools_enabled": "BOOLEAN DEFAULT 0",
+            "tool_config_json": "JSON",
+            "notice": "TEXT",
             "is_default": "BOOLEAN DEFAULT 0",
             "deliberation_json": "JSON",
         },

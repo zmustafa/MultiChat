@@ -847,7 +847,9 @@ export function ComparePage() {
     const created = await sm.create.mutateAsync({
       title: persona.name,
       system_prompt: persona.system_prompt || undefined,
+      notice: persona.notice || undefined,
       tools_enabled: persona.tools_enabled,
+      tool_config: persona.tool_config || undefined,
       lanes: lanes.map((l) => ({
         provider_id: l.provider_id,
         model: l.model,
@@ -890,6 +892,7 @@ export function ComparePage() {
     await personaMut.create.mutateAsync({
       name,
       system_prompt: session.system_prompt || null,
+      notice: session.notice || null,
       tools_enabled: session.tools_enabled,
       lanes: session.lanes
         .filter((l) => l.role === "responder" || l.role === "judge")
@@ -1574,6 +1577,15 @@ export function ComparePage() {
           </button>
           </div>
         </header>
+
+        {session?.notice && (
+          <div
+            role="note"
+            className="border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100"
+          >
+            <span className="font-semibold">Safety notice:</span> {session.notice}
+          </div>
+        )}
 
         {promptOpen && session && (
           <div className="border-b border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-900/40">

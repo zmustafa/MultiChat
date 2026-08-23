@@ -144,6 +144,7 @@ def _serialize_detail(db: DbSession, s: ChatSession) -> SessionDetail:
         id=s.id,
         title=s.title,
         system_prompt=s.system_prompt,
+        notice=s.notice,
         tools_enabled=s.tools_enabled,
         tool_config_json=dict(s.tool_config_json or {}),
         folder_id=s.folder_id,
@@ -373,6 +374,7 @@ def create_session(
         user_id=user.id,
         title=payload.title or "New topic",
         system_prompt=payload.system_prompt,
+        notice=payload.notice,
         tools_enabled=payload.tools_enabled,
         tool_config_json=payload.tool_config or {},
     )
@@ -470,6 +472,7 @@ def _clone_session(
         user_id=user.id,
         title=title,
         system_prompt=src.system_prompt,
+        notice=src.notice,
         tools_enabled=src.tools_enabled,
         tool_config_json=dict(src.tool_config_json or {}),
         folder_id=src.folder_id,
@@ -672,6 +675,8 @@ def update_session(
         s.title = payload.title
     if payload.system_prompt is not None:
         s.system_prompt = payload.system_prompt
+    if payload.notice is not None:
+        s.notice = payload.notice
     if payload.tools_enabled is not None:
         s.tools_enabled = payload.tools_enabled
     if payload.tool_config is not None:

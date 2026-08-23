@@ -271,6 +271,15 @@ export function NewChatHome({
             }
           />
 
+          {persona?.notice && (
+            <div
+              role="note"
+              className="mt-3 border-l-2 border-amber-500 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-950 dark:bg-amber-950/30 dark:text-amber-100"
+            >
+              <span className="font-semibold">Safety notice:</span> {persona.notice}
+            </div>
+          )}
+
           {error && <div className="mt-2 text-[11px] text-rose-500">{error}</div>}
 
           <div className="mt-4 flex flex-wrap justify-center gap-2">

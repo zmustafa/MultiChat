@@ -78,6 +78,7 @@ class Session(Base):
     )
     title: Mapped[str] = mapped_column(String, default="New topic")
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notice: Mapped[str | None] = mapped_column(Text, nullable=True)
     # "compare" (side-by-side lanes) | "deliberation" (panel peer review)
     mode: Mapped[str] = mapped_column(String, default="compare")
     tools_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -274,7 +275,9 @@ class Persona(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notice: Mapped[str | None] = mapped_column(Text, nullable=True)
     tools_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    tool_config_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     # [{"provider_id": .., "model": .., "role": ".."}]
     lanes_json: Mapped[list] = mapped_column(JSON, default=list)
@@ -283,6 +286,25 @@ class Persona(Base):
     deliberation_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=_now)
     updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
+
+
+class StarterPersonaState(Base):
+    """Per-user lifecycle state for a persona shipped in the starter catalog.
+
+    ``persona_id`` intentionally has no foreign key so deleting the persona does not
+    erase the tombstone and cause it to be recreated on the next startup.
+    """
+
+    __tablename__ = "starter_persona_states"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    seed_key: Mapped[str] = mapped_column(String, primary_key=True)
+    persona_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    seeded_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    dismissed: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class Folder(Base):

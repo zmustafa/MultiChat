@@ -13,7 +13,9 @@ export interface PersonaBody {
   name: string;
   description?: string | null;
   system_prompt?: string | null;
+  notice?: string | null;
   tools_enabled?: boolean;
+  tool_config?: Record<string, unknown> | null;
   lanes?: PersonaLane[];
   deliberation?: DeliberationPreset | null;
 }

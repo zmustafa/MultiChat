@@ -37,7 +37,9 @@ export function SidebarNav() {
       const created = await sm.create.mutateAsync({
         title: persona.name,
         system_prompt: persona.system_prompt || undefined,
+        notice: persona.notice || undefined,
         tools_enabled: persona.tools_enabled,
+        tool_config: persona.tool_config || undefined,
         lanes: lanes.map((l) => ({
           provider_id: l.provider_id,
           model: l.model,

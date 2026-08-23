@@ -54,6 +54,7 @@ export function useSessionMutations() {
     mutationFn: (body: {
       title?: string;
       system_prompt?: string;
+      notice?: string;
       lanes: { provider_id: string; model: string; role?: LaneRole }[];
       tools_enabled?: boolean;
       tool_config?: Record<string, unknown>;

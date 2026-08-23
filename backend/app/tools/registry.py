@@ -44,7 +44,8 @@ def resolve_enabled_tools(tool_config: dict | None) -> list[Tool]:
     integration is connected) are always included so M365 access is available in every
     chat that has tools turned on.
     """
-    extra = list(workiq_tools().values())
+    include_workiq = tool_config is None or tool_config.get("include_workiq", True)
+    extra = list(workiq_tools().values()) if include_workiq else []
     if tool_config is None:
         # No config at all — default to all tools (caller only invokes this when
         # tools are enabled for the session).

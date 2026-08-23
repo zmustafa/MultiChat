@@ -220,6 +220,7 @@ class TurnOut(BaseModel):
 class SessionCreate(BaseModel):
     title: str | None = None
     system_prompt: str | None = None
+    notice: str | None = None
     lanes: list[LaneCreate] = Field(default_factory=list, max_length=6)
     tools_enabled: bool = True
     tool_config: dict[str, Any] | None = None
@@ -228,6 +229,7 @@ class SessionCreate(BaseModel):
 class SessionUpdate(BaseModel):
     title: str | None = None
     system_prompt: str | None = None
+    notice: str | None = None
     tools_enabled: bool | None = None
     tool_config: dict[str, Any] | None = None
     folder_id: str | None = None
@@ -259,6 +261,7 @@ class SessionDetail(BaseModel):
     id: str
     title: str
     system_prompt: str | None
+    notice: str | None = None
     tools_enabled: bool
     tool_config_json: dict
     folder_id: str | None = None
@@ -349,7 +352,9 @@ class PersonaCreate(BaseModel):
     name: str
     description: str | None = None
     system_prompt: str | None = None
+    notice: str | None = None
     tools_enabled: bool = True
+    tool_config: dict[str, Any] | None = None
     lanes: list[PersonaLane] = Field(default_factory=list, max_length=6)
     deliberation: DeliberationPreset | None = None
 
@@ -358,7 +363,9 @@ class PersonaUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     system_prompt: str | None = None
+    notice: str | None = None
     tools_enabled: bool | None = None
+    tool_config: dict[str, Any] | None = None
     lanes: list[PersonaLane] | None = None
     deliberation: DeliberationPreset | None = None
 
@@ -368,7 +375,9 @@ class PersonaOut(BaseModel):
     name: str
     description: str | None
     system_prompt: str | None
+    notice: str | None = None
     tools_enabled: bool
+    tool_config: dict[str, Any] | None = None
     is_default: bool = False
     lanes: list[PersonaLane]
     deliberation: DeliberationPreset | None = None

@@ -69,7 +69,9 @@ function PersonaEditor({
       name: name.trim() || "Untitled persona",
       description: description || null,
       system_prompt: systemPrompt || null,
+      notice: p?.notice ?? null,
       tools_enabled: toolsEnabled,
+      tool_config: p?.tool_config ?? null,
       lanes,
       deliberation: delib,
     };
@@ -419,7 +421,9 @@ export function PersonaLibraryPage() {
     const created = await sm.create.mutateAsync({
       title: p.name,
       system_prompt: p.system_prompt || undefined,
+      notice: p.notice || undefined,
       tools_enabled: p.tools_enabled,
+      tool_config: p.tool_config || undefined,
       lanes: lanes.map((l) => ({
         provider_id: l.provider_id,
         model: l.model,
@@ -438,7 +442,9 @@ export function PersonaLibraryPage() {
       name: `${p.name} (copy)`,
       description: p.description,
       system_prompt: p.system_prompt,
+      notice: p.notice ?? null,
       tools_enabled: p.tools_enabled,
+      tool_config: p.tool_config ?? null,
       lanes: p.lanes,
       deliberation: p.deliberation ?? null,
     });
@@ -471,7 +477,9 @@ export function PersonaLibraryPage() {
       name: p.name,
       description: p.description,
       system_prompt: p.system_prompt,
+      notice: p.notice ?? null,
       tools_enabled: p.tools_enabled,
+      tool_config: p.tool_config ?? null,
       lanes: p.lanes,
       deliberation: p.deliberation ?? null,
     };

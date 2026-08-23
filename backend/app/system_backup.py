@@ -23,6 +23,7 @@ from .models import (
     Persona,
     Provider,
     Snippet,
+    StarterPersonaState,
     ToolCall,
     ToolCredential,
     Turn,
@@ -118,12 +119,27 @@ def build_export(db: DbSession, user: User) -> bytes:
             "name": p.name,
             "description": p.description,
             "system_prompt": p.system_prompt,
+            "notice": p.notice,
             "tools_enabled": p.tools_enabled,
+            "tool_config_json": p.tool_config_json,
             "is_default": p.is_default,
             "lanes_json": p.lanes_json,
             "deliberation_json": p.deliberation_json,
         }
         for p in personas
+    ]
+    starter_states = db.scalars(
+        select(StarterPersonaState).where(StarterPersonaState.user_id == user.id)
+    ).all()
+    data["starter_persona_states"] = [
+        {
+            "seed_key": state.seed_key,
+            "persona_id": state.persona_id,
+            "version": state.version,
+            "seeded_hash": state.seeded_hash,
+            "dismissed": state.dismissed,
+        }
+        for state in starter_states
     ]
 
     folders = db.scalars(select(Folder).where(Folder.user_id == user.id)).all()
@@ -200,6 +216,7 @@ def build_export(db: DbSession, user: User) -> bytes:
                 "id": s.id,
                 "title": s.title,
                 "system_prompt": s.system_prompt,
+                "notice": s.notice,
                 "tools_enabled": s.tools_enabled,
                 "tool_config_json": s.tool_config_json,
                 "folder_id": s.folder_id,
@@ -341,6 +358,10 @@ def _delete_user_data(db: DbSession, user: User) -> None:
         db.delete(r)
     for s in db.scalars(select(EvalSuite).where(EvalSuite.user_id == user.id)).all():
         db.delete(s)
+    for state in db.scalars(
+        select(StarterPersonaState).where(StarterPersonaState.user_id == user.id)
+    ).all():
+        db.delete(state)
     for p in db.scalars(select(Persona).where(Persona.user_id == user.id)).all():
         db.delete(p)
     for f in db.scalars(select(Folder).where(Folder.user_id == user.id)).all():
@@ -418,10 +439,24 @@ def restore_import(db: DbSession, user: User, zip_bytes: bytes) -> dict:
                 name=p["name"],
                 description=p.get("description"),
                 system_prompt=p.get("system_prompt"),
+                notice=p.get("notice"),
                 tools_enabled=bool(p.get("tools_enabled")),
+                tool_config_json=p.get("tool_config_json"),
                 is_default=bool(p.get("is_default")),
                 lanes_json=p.get("lanes_json") or [],
                 deliberation_json=p.get("deliberation_json"),
+            )
+        )
+
+    for state in data.get("starter_persona_states", []):
+        db.add(
+            StarterPersonaState(
+                user_id=uid,
+                seed_key=state["seed_key"],
+                persona_id=state.get("persona_id"),
+                version=int(state.get("version", 1)),
+                seeded_hash=state.get("seeded_hash"),
+                dismissed=bool(state.get("dismissed")),
             )
         )
 
@@ -481,6 +516,7 @@ def restore_import(db: DbSession, user: User, zip_bytes: bytes) -> dict:
                 user_id=uid,
                 title=s.get("title", "New topic"),
                 system_prompt=s.get("system_prompt"),
+                notice=s.get("notice"),
                 tools_enabled=bool(s.get("tools_enabled")),
                 tool_config_json=s.get("tool_config_json") or {},
                 folder_id=s.get("folder_id"),
