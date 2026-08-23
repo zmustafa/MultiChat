@@ -95,6 +95,7 @@ async def build_provider(
         return OpenAIProvider(
             provider=ptype,
             api_key=token,
+            credential_scope=provider.id,
             model=deployment,
             base_url=provider.base_url or "",
             api_version=extra.get("api_version", default_api_version),
@@ -116,6 +117,7 @@ async def build_provider(
         base = provider.base_url or extra.get("copilot_api_base") or COPILOT_BASE
         return CopilotProvider(
             token=token,
+            credential_scope=provider.id,
             model=resolved,
             base_url=base,
             editor_headers=headers,
@@ -127,6 +129,7 @@ async def build_provider(
         return OpenAIProvider(
             provider=ptype,
             api_key=token,
+            credential_scope=provider.id,
             model=resolved,
             base_url=provider.base_url or "",
             default_headers=extra.get("headers"),

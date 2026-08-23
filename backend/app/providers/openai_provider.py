@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import secrets
 from collections import OrderedDict
 from collections.abc import AsyncIterator
 from typing import Any
@@ -86,19 +85,11 @@ _PROVIDER_NAMES = {
 
 # A fresh AsyncOpenAI carries its own httpx connection pool, so building one per lane per
 # turn meant a new TLS handshake for every message (and the pools were never closed).
-# Clients are cached by everything that affects the connection; a rotated OAuth bearer
-# therefore yields a new entry and the stale one is evicted by the LRU.
+# Clients are keyed by a non-secret provider scope and connection settings. Credentials
+# stay in the cache value only; rotation replaces and closes the stale client.
 _MAX_CACHED_CLIENTS = 32
-_client_cache: OrderedDict[str, AsyncOpenAI | AsyncAzureOpenAI] = OrderedDict()
-_CREDENTIAL_FINGERPRINT_KEY = secrets.token_bytes(32)
-
-
-def _credential_fingerprint(credential: str) -> str:
-    return hmac.new(
-        _CREDENTIAL_FINGERPRINT_KEY,
-        credential.encode(),
-        hashlib.sha256,
-    ).hexdigest()
+_Client = AsyncOpenAI | AsyncAzureOpenAI
+_client_cache: OrderedDict[str, tuple[str, _Client]] = OrderedDict()
 
 
 def _client_key(parts: dict[str, Any]) -> str:
@@ -106,15 +97,19 @@ def _client_key(parts: dict[str, Any]) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
-def _cached_client(key: str, factory) -> AsyncOpenAI | AsyncAzureOpenAI:  # noqa: ANN001
+def _cached_client(key: str, credential: str, factory) -> _Client:  # noqa: ANN001
     existing = _client_cache.get(key)
     if existing is not None:
-        _client_cache.move_to_end(key)
-        return existing
+        existing_credential, client = existing
+        if hmac.compare_digest(existing_credential, credential):
+            _client_cache.move_to_end(key)
+            return client
+        _client_cache.pop(key)
+        _schedule_close(client)
     client = factory()
-    _client_cache[key] = client
+    _client_cache[key] = (credential, client)
     while len(_client_cache) > _MAX_CACHED_CLIENTS:
-        _, evicted = _client_cache.popitem(last=False)
+        _, (_, evicted) = _client_cache.popitem(last=False)
         _schedule_close(evicted)
     return client
 
@@ -139,7 +134,7 @@ async def _safe_close(client: AsyncOpenAI | AsyncAzureOpenAI) -> None:
 
 async def close_cached_clients() -> None:
     """Close and drop every pooled client (called on application shutdown)."""
-    clients = list(_client_cache.values())
+    clients = [client for _, client in _client_cache.values()]
     _client_cache.clear()
     for client in clients:
         await _safe_close(client)
@@ -151,6 +146,7 @@ class OpenAIProvider(LLMProvider):
         *,
         provider: str,
         api_key: str,
+        credential_scope: str,
         model: str,
         base_url: str = "",
         api_version: str = "2024-10-21",
@@ -180,12 +176,13 @@ class OpenAIProvider(LLMProvider):
                     "kind": "azure",
                     "endpoint": base_url,
                     "version": api_version or "2024-10-21",
-                    "auth": _credential_fingerprint(api_key or ""),
+                    "credential_scope": credential_scope,
                     "headers": default_headers or {},
                 }
             )
             self._client: AsyncOpenAI | AsyncAzureOpenAI = _cached_client(
                 key,
+                api_key or "",
                 lambda: AsyncAzureOpenAI(
                     api_key=api_key or "",
                     azure_endpoint=base_url,
@@ -199,12 +196,13 @@ class OpenAIProvider(LLMProvider):
                 {
                     "kind": "openai",
                     "base": base_url,
-                    "auth": _credential_fingerprint(api_key or ""),
+                    "credential_scope": credential_scope,
                     "headers": default_headers or {},
                 }
             )
             self._client = _cached_client(
                 key,
+                api_key or "",
                 lambda: AsyncOpenAI(
                     api_key=api_key or "not-needed",
                     default_headers=default_headers,

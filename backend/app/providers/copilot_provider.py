@@ -34,6 +34,7 @@ class CopilotProvider(LLMProvider):
         self,
         *,
         token: str,
+        credential_scope: str,
         model: str,
         base_url: str,
         editor_headers: dict[str, str],
@@ -43,10 +44,12 @@ class CopilotProvider(LLMProvider):
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._editor_headers = editor_headers
+        self._credential_scope = credential_scope
         self._fallback_models = fallback_models or []
         self._chat = OpenAIProvider(
             provider="github_copilot",
             api_key=token,
+            credential_scope=credential_scope,
             model=model,
             base_url=self._base_url,
             default_headers=editor_headers,
@@ -68,6 +71,7 @@ class CopilotProvider(LLMProvider):
             chat = OpenAIProvider(
                 provider="github_copilot",
                 api_key=self._token,
+                credential_scope=self._credential_scope,
                 model=self._model,
                 base_url=self._base_url,
                 default_headers={**self._editor_headers, "Copilot-Vision-Request": "true"},
