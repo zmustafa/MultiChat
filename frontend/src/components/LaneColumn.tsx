@@ -3,6 +3,7 @@ import type { Lane, LaneMessage, Provider, Turn } from "../api/types";
 import { mediaUrl } from "../api/client";
 import type { LiveLane } from "../hooks/useBroadcast";
 import { addArtifact } from "../hooks/useArtifacts";
+import { useDismiss } from "../hooks/useDismiss";
 import { isLaneCollapsed, setLaneCollapsedState } from "../utils/laneCollapse";
 import { contentBadges } from "../utils/contentMeta";
 import type { QueuedMessage } from "./LaneComposer";
@@ -45,6 +46,7 @@ interface Props {
   queued?: QueuedMessage[];
   onSendQueuedNow?: (msgId: string) => void;
   onRemoveQueued?: (msgId: string) => void;
+  mobile?: boolean;
 }
 
 function CopyIcon() {
@@ -134,7 +136,7 @@ export function DownloadPdfButton({ onDownload }: { onDownload: () => Promise<vo
           ? `PDF export failed: ${error}`
           : "Download this response as a PDF"
       }
-      className={`flex items-center gap-1 rounded px-1.5 py-1 text-[10px] font-medium transition hover:bg-gray-100 hover:text-gray-700 disabled:cursor-wait dark:hover:bg-gray-800 dark:hover:text-gray-200 ${
+      className={`flex min-h-11 items-center gap-1 rounded px-1.5 py-1 text-[10px] font-medium transition hover:bg-gray-100 hover:text-gray-700 disabled:cursor-wait lg:min-h-0 dark:hover:bg-gray-800 dark:hover:text-gray-200 ${
         state === "error" ? "text-red-500" : ""
       }`}
     >
@@ -185,7 +187,7 @@ function ResponseActions({
           setTimeout(() => setCopied(false), 1200);
         }}
         title="Copy response"
-        className="rounded p-1 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+        className="inline-flex min-h-11 min-w-11 items-center justify-center rounded p-1 transition hover:bg-gray-100 hover:text-gray-700 lg:min-h-0 lg:min-w-0 dark:hover:bg-gray-800 dark:hover:text-gray-200"
       >
         {copied ? <CheckIcon /> : <CopyIcon />}
       </button>
@@ -193,7 +195,7 @@ function ResponseActions({
         <button
           onClick={onPin}
           title="Pin this answer to compare across runs"
-          className="rounded p-1 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+          className="inline-flex min-h-11 min-w-11 items-center justify-center rounded p-1 transition hover:bg-gray-100 hover:text-gray-700 lg:min-h-0 lg:min-w-0 dark:hover:bg-gray-800 dark:hover:text-gray-200"
         >
           📌
         </button>
@@ -203,7 +205,7 @@ function ResponseActions({
           onClick={onRegenerate}
           disabled={regenerateDisabled}
           title="Regenerate response"
-          className="rounded p-1 transition hover:bg-gray-100 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+          className="inline-flex min-h-11 min-w-11 items-center justify-center rounded p-1 transition hover:bg-gray-100 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-40 lg:min-h-0 lg:min-w-0 dark:hover:bg-gray-800 dark:hover:text-gray-200"
         >
           <RegenIcon />
         </button>
@@ -223,7 +225,7 @@ function CopyBtn({ text, label = "Copy" }: { text: string; label?: string }) {
         setTimeout(() => setDone(false), 1200);
       }}
       title="Copy to clipboard"
-      className="rounded px-1 text-[10px] text-gray-400 opacity-0 transition hover:text-gray-700 group-hover:opacity-100 dark:hover:text-gray-200"
+      className="rounded px-1 text-[10px] text-gray-400 opacity-100 transition hover:text-gray-700 lg:opacity-0 lg:group-hover:opacity-100 dark:hover:text-gray-200"
     >
       {done ? "✓ Copied" : label}
     </button>
@@ -426,7 +428,10 @@ function StickyYouHeader({
   onBranchTurn?: (turnId: string) => void;
 }) {
   const sentinelRef = useRef<HTMLDivElement>(null);
+  const mobileActionsRef = useRef<HTMLDivElement>(null);
   const [stuck, setStuck] = useState(false);
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+  useDismiss(mobileActionsRef, mobileActionsOpen, () => setMobileActionsOpen(false));
   useEffect(() => {
     const root = scrollRef.current;
     const sentinel = sentinelRef.current;
@@ -446,8 +451,8 @@ function StickyYouHeader({
   return (
     <>
       <div ref={sentinelRef} className="h-0" aria-hidden />
-      <div className="group sticky top-0 z-20 rounded border border-blue-200 bg-gradient-to-br from-blue-100 to-blue-300 px-2 py-1 shadow-sm backdrop-blur-sm dark:border-blue-900/40 dark:from-blue-950 dark:to-blue-900">
-        <div className="flex items-center justify-between">
+      <div className="group sticky top-0 z-20 -mx-2 rounded-none border-x-0 border-blue-200 bg-gradient-to-br from-blue-100 to-blue-300 px-2 py-0.5 shadow-sm backdrop-blur-sm lg:mx-0 lg:rounded lg:border lg:py-1 dark:border-blue-900/40 dark:from-blue-950 dark:to-blue-900">
+        <div className="hidden items-center justify-between lg:flex">
           <span className="text-[10px] font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300">
             You
           </span>
@@ -500,8 +505,47 @@ function StickyYouHeader({
             {turn.content && <CopyBtn text={turn.content} />}
           </span>
         </div>
+        <div ref={mobileActionsRef} className="relative lg:hidden">
+          <button
+            type="button"
+            onClick={() => setMobileActionsOpen((open) => !open)}
+            aria-expanded={mobileActionsOpen}
+            aria-label="Prompt actions"
+            title={turn.content || turn.attachments.map((attachment) => attachment.filename).join(", ")}
+            className="flex h-7 w-full min-w-0 items-baseline gap-1.5 text-left"
+          >
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300">
+              You
+            </span>
+            <span aria-hidden className="shrink-0 text-blue-700 dark:text-blue-300">·</span>
+            <span className="min-w-0 flex-1 truncate text-sm text-gray-800 dark:text-gray-100">
+              {turn.content || turn.attachments.map((attachment) => attachment.filename).join(", ") || "Attachment"}
+            </span>
+            <span aria-hidden className="shrink-0 text-lg text-blue-800 dark:text-blue-200">…</span>
+          </button>
+          {mobileActionsOpen && (
+            <div className="absolute right-0 top-7 z-30 w-52 overflow-hidden rounded-lg border border-gray-200 bg-white py-1 text-sm text-gray-700 shadow-xl dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200">
+              {onResendTurn && turn.content && (
+                <button type="button" onClick={() => { onResendTurn(turn.content); setMobileActionsOpen(false); }} className="flex min-h-11 w-full items-center px-4 text-left hover:bg-gray-100 dark:hover:bg-gray-800">Send to all lanes</button>
+              )}
+              {onResendHere && turn.content && (
+                <button type="button" onClick={() => { onResendHere(turn.content); setMobileActionsOpen(false); }} className="flex min-h-11 w-full items-center px-4 text-left hover:bg-gray-100 dark:hover:bg-gray-800">Send to this lane</button>
+              )}
+              {onEditTurn && turn.content && (
+                <button type="button" onClick={() => { onEditTurn(turn.id, turn.content); setMobileActionsOpen(false); }} className="flex min-h-11 w-full items-center px-4 text-left hover:bg-gray-100 dark:hover:bg-gray-800">Edit and resend</button>
+              )}
+              {onBranchTurn && (
+                <button type="button" onClick={() => { onBranchTurn(turn.id); setMobileActionsOpen(false); }} className="flex min-h-11 w-full items-center px-4 text-left hover:bg-gray-100 dark:hover:bg-gray-800">Branch from here</button>
+              )}
+              {turn.content && <div className="flex min-h-11 items-center px-3"><CopyBtn text={turn.content} label="Copy prompt" /></div>}
+              {onDeleteTurn && (
+                <button type="button" onClick={() => { onDeleteTurn(turn.id); setMobileActionsOpen(false); }} className="flex min-h-11 w-full items-center px-4 text-left text-red-600 hover:bg-red-50 dark:hover:bg-red-950">Delete turn</button>
+              )}
+            </div>
+          )}
+        </div>
         {turn.attachments.length > 0 && (
-          <div className="mt-1 flex flex-wrap gap-1.5">
+          <div className="mt-1 hidden flex-wrap gap-1.5 lg:flex">
             {turn.attachments.map((a) =>
               a.kind === "document" ? (
                 <a
@@ -535,7 +579,7 @@ function StickyYouHeader({
         )}
         {turn.content && (
           <div
-            className={`mt-1 whitespace-pre-wrap break-words text-sm text-gray-800 dark:text-gray-100 ${
+            className={`mt-1 hidden whitespace-pre-wrap break-words text-sm text-gray-800 lg:block dark:text-gray-100 ${
               stuck ? "line-clamp-2" : ""
             }`}
             title={stuck ? turn.content : undefined}
@@ -581,9 +625,13 @@ export function LaneColumn({
   queued,
   onSendQueuedNow,
   onRemoveQueued,
+  mobile = false,
 }: Props) {
   const [collapsed, setCollapsed] = useState(() => isLaneCollapsed(lane.id));
   const [editingModel, setEditingModel] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const mobileMenuRef = useRef<HTMLDivElement>(null);
+  useDismiss(mobileMenuRef, mobileMenuOpen, () => setMobileMenuOpen(false));
   const [laneDraft, setLaneDraft] = useState("");
   // The per-lane reply box stays collapsed until asked for, so the shared composer at the
   // bottom of the page is unambiguously the primary input.
@@ -605,6 +653,7 @@ export function LaneColumn({
       setLaneCollapsedState(lane.id, v);
       return v;
     });
+  const effectiveCollapsed = mobile ? false : collapsed;
 
   function startResize(e: React.MouseEvent) {
     if (!onResize) return;
@@ -753,12 +802,14 @@ export function LaneColumn({
     <div
       ref={rootRef}
       style={
-        !collapsed && !isMaximized && width
+        !mobile && !effectiveCollapsed && !isMaximized && width
           ? { width, flexGrow: 0, flexShrink: 0 }
           : undefined
       }
       className={`relative flex flex-col rounded-lg border border-gray-300 bg-white dark:border-gray-700 dark:bg-gray-900 ${
-        collapsed
+        mobile
+          ? "min-w-0 flex-1 basis-0 rounded-none border-0"
+          : effectiveCollapsed
           ? "w-10 shrink-0"
           : isMaximized
             ? "min-w-0 flex-1 basis-0"
@@ -769,7 +820,7 @@ export function LaneColumn({
                 : "min-w-[280px] flex-1 basis-0"
       }`}
     >
-      {!collapsed && !isMaximized && onResize && (
+      {!mobile && !effectiveCollapsed && !isMaximized && onResize && (
         <div
           onMouseDown={startResize}
           onDoubleClick={() => onResize(0)}
@@ -777,7 +828,7 @@ export function LaneColumn({
           className="absolute right-0 top-0 z-10 h-full w-1.5 cursor-col-resize rounded-r-lg hover:bg-brand/40"
         />
       )}
-      {collapsed ? (
+      {effectiveCollapsed ? (
         <div className="flex h-full flex-col items-center gap-2 py-2">
           <button
             onClick={() => toggleCollapsed(false)}
@@ -809,6 +860,117 @@ export function LaneColumn({
             ✕
           </button>
         </div>
+      ) : mobile ? (
+      <div className="hidden">
+        {editingModel && providers && onUpdateLane ? (
+          <LaneModelEditor
+            lane={lane}
+            providers={providers}
+            onSave={(body) => {
+              onUpdateLane(body);
+              setEditingModel(false);
+            }}
+            onCancel={() => setEditingModel(false)}
+          />
+        ) : (
+          <>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-semibold" title={lane.model}>
+                {isBest && "⭐ "}{lane.model}{lane.role === "judge" && " (judge)"}
+              </div>
+              <div className="truncate text-xs text-gray-500 dark:text-gray-400">{providerName}</div>
+            </div>
+            <StatusBadge state={status} />
+            <div ref={mobileMenuRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setMobileMenuOpen((open) => !open)}
+                aria-expanded={mobileMenuOpen}
+                aria-label={`Actions for ${lane.model}`}
+                className="inline-flex h-11 w-11 items-center justify-center rounded-lg text-xl text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+              >
+                ⋮
+              </button>
+              {mobileMenuOpen && (
+                  <div className="absolute right-0 top-12 z-30 w-56 overflow-hidden rounded-lg border border-gray-200 bg-white py-1 text-sm shadow-xl dark:border-gray-700 dark:bg-gray-900">
+                    {providers && onUpdateLane && (
+                      <button
+                        type="button"
+                        onClick={() => { setEditingModel(true); setMobileMenuOpen(false); }}
+                        className="flex min-h-11 w-full items-center px-4 text-left hover:bg-gray-100 dark:hover:bg-gray-800"
+                      >
+                        ✎ Change model
+                      </button>
+                    )}
+                    {hasCode && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCodeFold((fold) => ({ signal: fold.signal + 1, collapsed: !fold.collapsed }));
+                          setMobileMenuOpen(false);
+                        }}
+                        className="flex min-h-11 w-full items-center px-4 text-left hover:bg-gray-100 dark:hover:bg-gray-800"
+                      >
+                        {codeFold.collapsed ? "Expand" : "Collapse"} code blocks
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => { onPickBest(); setMobileMenuOpen(false); }}
+                      className="flex min-h-11 w-full items-center px-4 text-left hover:bg-gray-100 dark:hover:bg-gray-800"
+                    >
+                      {isBest ? "Remove best marker" : "⭐ Mark as best"}
+                    </button>
+                    {status === "streaming" || status === "queued" ? (
+                      <button
+                        type="button"
+                        onClick={() => { onStop(); setMobileMenuOpen(false); }}
+                        className="flex min-h-11 w-full items-center px-4 text-left text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
+                      >
+                        Stop response
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={!hasTurns}
+                        onClick={() => { onRegenerate(); setMobileMenuOpen(false); }}
+                        className="flex min-h-11 w-full items-center px-4 text-left hover:bg-gray-100 disabled:opacity-40 dark:hover:bg-gray-800"
+                      >
+                        ↻ Regenerate latest
+                      </button>
+                    )}
+                    {onContinue && (
+                      <button
+                        type="button"
+                        disabled={!hasTurns}
+                        onClick={() => { onContinue(); setMobileMenuOpen(false); }}
+                        className="flex min-h-11 w-full items-center px-4 text-left hover:bg-gray-100 disabled:opacity-40 dark:hover:bg-gray-800"
+                      >
+                        → Continue
+                      </button>
+                    )}
+                    {lane.role === "responder" && onSendToLane && (
+                      <button
+                        type="button"
+                        onClick={() => { setReplyOpen((open) => !open); setMobileMenuOpen(false); }}
+                        className="flex min-h-11 w-full items-center px-4 text-left hover:bg-gray-100 dark:hover:bg-gray-800"
+                      >
+                        ↩ Message this lane
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => { (onClose ?? onRemove)(); setMobileMenuOpen(false); }}
+                      className="flex min-h-11 w-full items-center px-4 text-left text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
+                    >
+                      Hide lane
+                    </button>
+                  </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
       ) : (
       <div className="flex items-center justify-between gap-1 border-b border-gray-200 px-2 py-1.5 dark:border-gray-700">
         {editingModel && providers && onUpdateLane ? (
@@ -868,7 +1030,7 @@ export function LaneColumn({
                 </button>
               )}
               <StatusBadge state={status} />
-              {onToggleMaximize && !collapsed && (
+              {onToggleMaximize && !effectiveCollapsed && (
                 <button
                   onClick={onToggleMaximize}
                   className="inline-flex h-6 w-6 items-center justify-center rounded text-xs text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
@@ -885,14 +1047,14 @@ export function LaneColumn({
               <button
                 onClick={() => toggleCollapsed()}
                 className="inline-flex h-6 w-6 items-center justify-center rounded text-xs text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
-                title={collapsed ? "Expand" : "Collapse"}
+                title={effectiveCollapsed ? "Expand" : "Collapse"}
                 aria-label={
-                  collapsed
+                  effectiveCollapsed
                     ? `Expand the ${lane.model} lane`
                     : `Collapse the ${lane.model} lane`
                 }
               >
-                {collapsed ? "▸" : "▾"}
+                {effectiveCollapsed ? "▸" : "▾"}
               </button>
               <button
                 onClick={onClose ?? onRemove}
@@ -908,7 +1070,7 @@ export function LaneColumn({
       </div>
       )}
 
-      {!collapsed && (
+      {!effectiveCollapsed && (
         <>
           <div
             ref={scrollRef}
@@ -923,7 +1085,13 @@ export function LaneColumn({
             data-lane-scroll
             className={`min-h-0 flex-1 overflow-y-auto ${
               isEmpty ? "flex flex-col" : ""
-            } ${density === "compact" ? "p-1.5 text-[13px]" : "p-2"}`}
+            } ${
+              mobile
+                ? "px-2 pb-1.5 pt-0 text-[13px]"
+                : density === "compact"
+                  ? "p-1.5 text-[13px]"
+                  : "p-2"
+            }`}
           >
             <CodeFoldContext.Provider value={codeFold}>
             <div
@@ -1110,7 +1278,7 @@ export function LaneColumn({
                                 addArtifact(m.content, `${lane.model}: ${turn.content}`)
                               }
                               title="Pin to Artifacts"
-                              className="rounded px-1 text-[10px] text-gray-400 opacity-0 transition hover:text-gray-700 group-hover:opacity-100 dark:hover:text-gray-200"
+                              className="rounded px-1 text-[10px] text-gray-400 opacity-100 transition hover:text-gray-700 lg:opacity-0 lg:group-hover:opacity-100 dark:hover:text-gray-200"
                             >
                               📌
                             </button>
@@ -1255,7 +1423,7 @@ export function LaneColumn({
             </div>
           )}
 
-          <div className="flex flex-wrap items-center gap-1 border-t border-gray-200 px-2 py-1 dark:border-gray-700">
+          <div className="hidden flex-wrap items-center gap-1 border-t border-gray-200 px-2 py-1 lg:flex dark:border-gray-700">
             {/* An untouched lane only offers the one action that makes sense: talk to it.
                 Everything else operates on an answer that doesn't exist yet. */}
             {status === "streaming" ? (
@@ -1327,7 +1495,7 @@ export function LaneColumn({
               status === "queued" ||
               status === "thinking";
             return (
-            <div className="flex items-center gap-1 border-t border-gray-200 px-2 py-1 dark:border-gray-700">
+            <div className="flex items-center gap-1 border-t border-gray-200 px-2 py-1.5 dark:border-gray-700">
               <label className="sr-only" htmlFor={`lane-reply-${lane.id}`}>
                 {`Message ${lane.model} only`}
               </label>
@@ -1354,7 +1522,7 @@ export function LaneColumn({
                     : `Message ${lane.model} only…`
                 }
                 title={`Send a message to ${lane.model} only`}
-                className="min-w-0 flex-1 rounded border border-gray-300 px-2 py-1 text-xs dark:border-gray-600 dark:bg-gray-800"
+                className="min-h-11 min-w-0 flex-1 rounded border border-gray-300 px-2 py-1 text-sm lg:min-h-0 lg:text-xs dark:border-gray-600 dark:bg-gray-800"
               />
               <button
                 onClick={sendLaneDraft}
@@ -1364,7 +1532,7 @@ export function LaneColumn({
                     ? "Waiting for this lane to finish…"
                     : `Send only to ${lane.model}`
                 }
-                className="flex shrink-0 items-center gap-1 rounded bg-brand px-2 py-1 text-xs font-medium text-white hover:brightness-110 disabled:opacity-40"
+                className="flex min-h-11 shrink-0 items-center gap-1 rounded bg-brand px-3 py-1 text-sm font-medium text-white hover:brightness-110 disabled:opacity-40 lg:min-h-0 lg:px-2 lg:text-xs"
               >
                 {laneBusy && (
                   <svg

@@ -312,7 +312,7 @@ export function PromptField({
 
   return (
     <div className="flex min-w-0 flex-1 flex-col">
-      <div className="flex items-end gap-2">
+      <div className="flex items-end gap-1.5 lg:gap-2">
         <div
           onDragOver={(e) => {
             e.preventDefault();
@@ -332,12 +332,12 @@ export function PromptField({
             e.preventDefault();
             textareaRef.current?.focus();
           }}
-          className={`relative flex flex-1 flex-col rounded-lg border ${
+          className={`relative flex min-h-11 flex-1 flex-row flex-wrap items-center gap-1 rounded-lg border lg:min-h-0 lg:flex-col lg:items-stretch lg:gap-0 ${
             dragOver ? "border-dashed border-brand" : "border-gray-300 dark:border-gray-600"
-          } px-2 py-1.5 focus-within:border-brand dark:bg-gray-800`}
+          } px-2 py-1 focus-within:border-brand lg:py-1.5 dark:bg-gray-800`}
         >
           {attachments.length > 0 && (
-            <div className="flex flex-wrap gap-2 pb-1.5">
+            <div className="order-first flex w-full flex-wrap gap-2 pb-1.5">
               {attachments.map((a) => (
                 <div key={a.id} className="relative">
                   {a.kind === "image" ? (
@@ -390,10 +390,10 @@ export function PromptField({
                 onSubmit();
               }
             }}
-            className="block w-full resize-none overflow-hidden bg-transparent text-sm leading-5 focus:outline-none"
+            className="order-2 block min-w-0 flex-1 resize-none overflow-hidden bg-transparent text-sm leading-5 focus:outline-none lg:order-none lg:w-full"
           />
 
-          <div className="flex items-center gap-2 pt-1">
+          <div className="order-1 flex shrink-0 items-center gap-2 lg:order-none lg:pt-1">
             <AttachMenu
               onPickFiles={() => fileRef.current?.click()}
               onCapture={() => setCaptureOpen(true)}
@@ -417,7 +417,7 @@ export function PromptField({
             </div>
           )}
         </div>
-        {trailing}
+        {trailing && <div className="flex shrink-0 items-center gap-1.5 lg:gap-2">{trailing}</div>}
       </div>
 
       <input

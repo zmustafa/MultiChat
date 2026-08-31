@@ -4,10 +4,10 @@ import { MessageRenderer } from "./MessageRenderer";
 export function ArtifactPanel({ onClose }: { onClose: () => void }) {
   const artifacts = useArtifacts();
   return (
-    <div className="flex w-96 shrink-0 flex-col border-l border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-950">
+    <div className="fixed inset-0 z-40 flex w-full flex-col bg-gray-50 pt-[env(safe-area-inset-top)] lg:static lg:w-96 lg:shrink-0 lg:border-l lg:border-gray-200 lg:pt-0 dark:border-gray-700 dark:bg-gray-950">
       <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 dark:border-gray-700">
         <span className="text-sm font-semibold">📌 Artifacts ({artifacts.length})</span>
-        <button onClick={onClose} className="text-xs text-gray-500 hover:text-gray-800">
+        <button onClick={onClose} aria-label="Close artifacts" className="inline-flex h-11 w-11 items-center justify-center text-lg text-gray-500 hover:text-gray-800 lg:h-auto lg:w-auto lg:text-xs">
           ✕
         </button>
       </div>

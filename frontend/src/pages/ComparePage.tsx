@@ -41,6 +41,7 @@ import { useAuth } from "../auth/AuthContext";
 import { useBroadcast } from "../hooks/useBroadcast";
 import type { LiveLane } from "../hooks/useBroadcast";
 import { useDismiss } from "../hooks/useDismiss";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import { usePersonas, usePersonaMutations } from "../hooks/usePersonas";
 import { useProviders } from "../hooks/useProviders";
 import { useTheme } from "../hooks/useTheme";
@@ -146,6 +147,7 @@ export function ComparePage() {
   );
   const { data: session } = useSession(activeId);
   const sm = useSessionMutations();
+  const isMobile = useMediaQuery("(max-width: 1023px)");
 
   useEffect(() => {
     const topic =
@@ -158,7 +160,11 @@ export function ComparePage() {
   }, [activeId, session?.title, sessions]);
 
   const [showDiff, setShowDiff] = useState(false);
-  const [editDraft, setEditDraft] = useState<{ text: string; ts: number } | null>(null);
+  const [editDraft, setEditDraft] = useState<{
+    text: string;
+    ts: number;
+    turnId?: string;
+  } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [showArtifacts, setShowArtifacts] = useState(false);
@@ -172,8 +178,20 @@ export function ComparePage() {
   const [showInsights, setShowInsights] = useState(false);
   const [showFiles, setShowFiles] = useState(false);
   const [showSnapshots, setShowSnapshots] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+  const [mobileAddLaneOpen, setMobileAddLaneOpen] = useState(false);
+  useEffect(() => {
+    if (!isMobile) {
+      setMobileNavOpen(false);
+      setMobileActionsOpen(false);
+      setMobileAddLaneOpen(false);
+    }
+  }, [isMobile]);
   const [density, setDensity] = useState<"comfortable" | "compact">(
-    () => (localStorage.getItem("multichat_density") as "comfortable" | "compact") || "comfortable"
+    () =>
+      (localStorage.getItem("multichat_density") as "comfortable" | "compact") ||
+      (window.matchMedia("(max-width: 1023px)").matches ? "compact" : "comfortable")
   );
   const [fitToScreen, setFitToScreen] = useState(
     () => localStorage.getItem("multichat_fit") === "1"
@@ -913,6 +931,23 @@ export function ComparePage() {
     await sm.addLane.mutateAsync({ id: activeId, body: { provider_id, model, role } });
   }
 
+  function setJudgeEnabled(enabled: boolean) {
+    if (!activeId) return;
+    if (enabled) {
+      const responder = session?.lanes.find((lane) => lane.role === "responder");
+      const usable =
+        providers.find((provider) => provider.default_model || provider.models.length > 0) ||
+        providers[0];
+      const provider_id = responder?.provider_id || usable?.id;
+      const model = responder?.model || usable?.default_model || usable?.models[0] || "";
+      if (provider_id && model) {
+        sm.addLane.mutate({ id: activeId, body: { provider_id, model, role: "judge" } });
+      }
+    } else if (judgeLane) {
+      sm.removeLane.mutate({ id: activeId, laneId: judgeLane.id });
+    }
+  }
+
   function setBest(laneId: string) {
     if (!activeId) return;
     setBestLane((prev) => {
@@ -1051,39 +1086,24 @@ export function ComparePage() {
     nav("/settings/general");
   }
 
-  const sidebar = navCollapsed ? (
-    <div className="flex h-full w-11 shrink-0 flex-col items-center gap-1 border-r border-gray-200 bg-gray-50 py-2 dark:border-gray-700 dark:bg-gray-950">
-      <button
-        onClick={() => setNavCollapsed(false)}
-        title="Expand sidebar"
-        className="rounded p-1.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
-      >
-        ⏵
-      </button>
-      <button
-        onClick={() => nav("/")}
-        title="New chat"
-        className="rounded p-1.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
-      >
-        ✏️
-      </button>
-      <Link
-        to="/settings"
-        title="Settings"
-        className="rounded p-1.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
-      >
-        ⚙️
-      </Link>
-    </div>
-  ) : (
+  const fullSidebar = (
     <SessionSidebar
       sessions={sessions}
       personas={personas}
       activeId={activeId}
       generatingIds={generatingIds}
-      onSelect={setActiveId}
-      onNew={newTopic}
-      onCollapse={() => setNavCollapsed(true)}
+      onSelect={(id) => {
+        setActiveId(id);
+        setMobileNavOpen(false);
+      }}
+      onNew={(persona) => {
+        newTopic(persona);
+        setMobileNavOpen(false);
+      }}
+      onCollapse={() => {
+        if (isMobile) setMobileNavOpen(false);
+        else setNavCollapsed(true);
+      }}
       onRename={(id, title) => sm.update.mutate({ id, body: { title } })}
       onDelete={(id) => {
         const gone = sessions.find((s) => s.id === id);
@@ -1109,6 +1129,44 @@ export function ComparePage() {
       }}
     />
   );
+
+  const sidebar = isMobile ? (
+    mobileNavOpen ? (
+      <div className="fixed inset-0 z-50 flex" role="dialog" aria-modal="true" aria-label="Conversations">
+        <button
+          type="button"
+          aria-label="Close conversations"
+          onClick={() => setMobileNavOpen(false)}
+          className="absolute inset-0 bg-black/45"
+        />
+        <div className="relative h-full max-w-[85vw] shadow-2xl">{fullSidebar}</div>
+      </div>
+    ) : null
+  ) : navCollapsed ? (
+    <div className="flex h-full w-11 shrink-0 flex-col items-center gap-1 border-r border-gray-200 bg-gray-50 py-2 dark:border-gray-700 dark:bg-gray-950">
+      <button
+        onClick={() => setNavCollapsed(false)}
+        title="Expand sidebar"
+        className="rounded p-1.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
+      >
+        ⏵
+      </button>
+      <button
+        onClick={() => nav("/")}
+        title="New chat"
+        className="rounded p-1.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
+      >
+        ✏️
+      </button>
+      <Link
+        to="/settings"
+        title="Settings"
+        className="rounded p-1.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
+      >
+        ⚙️
+      </Link>
+    </div>
+  ) : fullSidebar;
 
   // The palette is shown on both views, so it is built once here rather than duplicated
   // in the deliberation branch below.
@@ -1202,7 +1260,137 @@ export function ComparePage() {
       {sidebar}
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex flex-wrap items-center gap-2 border-b border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
+        <header className="flex h-11 shrink-0 items-center gap-1 border-b border-gray-200 bg-white px-2 dark:border-gray-700 dark:bg-gray-900 lg:hidden">
+          <button
+            type="button"
+            onClick={() => setMobileNavOpen(true)}
+            aria-label="Open conversations"
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xl text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+          >
+            ☰
+          </button>
+          <label className="sr-only" htmlFor="mobile-topic-title">Topic title</label>
+          <input
+            id="mobile-topic-title"
+            value={session?.title || ""}
+            disabled={!session}
+            onChange={(e) => activeId && sm.update.mutate({ id: activeId, body: { title: e.target.value } })}
+            placeholder="Topic title"
+            className="min-w-0 flex-1 truncate rounded border border-transparent bg-transparent px-2 py-1 text-sm font-semibold focus:border-brand focus:outline-none dark:bg-transparent"
+          />
+          <button
+            type="button"
+            disabled={!session}
+            onClick={() => setMobileAddLaneOpen(true)}
+            aria-label="Add model lane"
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xl text-brand hover:bg-brand/10 disabled:opacity-40"
+          >
+            +
+          </button>
+          <button
+            type="button"
+            disabled={!session}
+            onClick={() => setMobileActionsOpen(true)}
+            aria-label="Open conversation actions"
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xl text-gray-600 hover:bg-gray-100 disabled:opacity-40 dark:text-gray-300 dark:hover:bg-gray-800"
+          >
+            ⋮
+          </button>
+        </header>
+
+        {mobileAddLaneOpen && session && (
+          <div className="fixed inset-0 z-50 flex items-end lg:hidden" role="dialog" aria-modal="true" aria-label="Add a lane">
+            <button type="button" aria-label="Close add lane" onClick={() => setMobileAddLaneOpen(false)} className="absolute inset-0 bg-black/45" />
+            <div className="relative max-h-[85dvh] w-full overflow-y-auto rounded-t-2xl bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl dark:bg-gray-900">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-base font-semibold">Add a model lane</h2>
+                <button type="button" onClick={() => setMobileAddLaneOpen(false)} aria-label="Close" className="inline-flex h-11 w-11 items-center justify-center rounded-lg text-xl">✕</button>
+              </div>
+              {providers.length > 0 ? (
+                <ModelPicker
+                  providers={providers}
+                  onAdd={(provider_id, model, role) => {
+                    addLane(provider_id, model, role);
+                    setMobileAddLaneOpen(false);
+                  }}
+                  allowJudge
+                />
+              ) : (
+                <div className="text-sm text-amber-600">No providers configured. <Link to="/settings" className="underline">Add one in Settings</Link>.</div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {mobileActionsOpen && session && (
+          <div className="fixed inset-0 z-50 flex items-end lg:hidden" role="dialog" aria-modal="true" aria-label="Conversation actions">
+            <button type="button" aria-label="Close conversation actions" onClick={() => setMobileActionsOpen(false)} className="absolute inset-0 bg-black/45" />
+            <div className="relative max-h-[88dvh] w-full overflow-y-auto rounded-t-2xl bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl dark:bg-gray-900">
+              <div className="mb-2 flex items-center justify-between">
+                <h2 className="text-base font-semibold">Conversation actions</h2>
+                <button type="button" onClick={() => setMobileActionsOpen(false)} aria-label="Close" className="inline-flex h-11 w-11 items-center justify-center rounded-lg text-xl">✕</button>
+              </div>
+
+              <div className="border-t border-gray-200 py-2 dark:border-gray-700">
+                <div className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Conversation</div>
+                <button type="button" onClick={() => { setPromptOpen((open) => !open); setMobileActionsOpen(false); }} className="flex min-h-11 w-full items-center justify-between rounded-lg px-3 text-left hover:bg-gray-100 dark:hover:bg-gray-800"><span>📝 Shared prompt</span><span>{promptOpen ? "On" : ""}</span></button>
+                <label className="flex min-h-11 items-center justify-between rounded-lg px-3 hover:bg-gray-100 dark:hover:bg-gray-800"><span>⚖️ Judge lane</span><input type="checkbox" checked={!!judgeLane} onChange={(e) => setJudgeEnabled(e.target.checked)} className="h-5 w-5" /></label>
+                <button type="button" onClick={() => { regenerateAll(); setMobileActionsOpen(false); }} disabled={!latestTurn || streaming} className="flex min-h-11 w-full items-center rounded-lg px-3 text-left hover:bg-gray-100 disabled:opacity-40 dark:hover:bg-gray-800">↻ Regenerate all</button>
+              </div>
+
+              <div className="border-t border-gray-200 py-2 dark:border-gray-700">
+                <div className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Tools</div>
+                <label className="flex min-h-11 items-center justify-between rounded-lg px-3 hover:bg-gray-100 dark:hover:bg-gray-800"><span>🛠 Enable tool use</span><input type="checkbox" checked={session.tools_enabled || false} onChange={(e) => activeId && sm.update.mutate({ id: activeId, body: { tools_enabled: e.target.checked } })} className="h-5 w-5" /></label>
+                {session.tools_enabled && allTools.map((tool) => {
+                  const enabled: string[] = session.tool_config_json?.enabled ?? allTools;
+                  return (
+                    <label key={tool} className="flex min-h-11 items-center justify-between rounded-lg pl-7 pr-3 text-sm hover:bg-gray-100 dark:hover:bg-gray-800">
+                      <span>{tool}</span>
+                      <input
+                        type="checkbox"
+                        checked={enabled.includes(tool)}
+                        onChange={(e) => {
+                          const next = e.target.checked ? [...new Set([...enabled, tool])] : enabled.filter((name) => name !== tool);
+                          if (activeId) sm.update.mutate({ id: activeId, body: { tool_config: { ...(session.tool_config_json || {}), enabled: next } } });
+                        }}
+                        className="h-5 w-5"
+                      />
+                    </label>
+                  );
+                })}
+              </div>
+
+              <div className="border-t border-gray-200 py-2 dark:border-gray-700">
+                <div className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">View and results</div>
+                <button type="button" onClick={() => { setShowDiff((value) => !value); setMobileActionsOpen(false); }} className="flex min-h-11 w-full items-center justify-between rounded-lg px-3 text-left hover:bg-gray-100 dark:hover:bg-gray-800"><span>⇄ Answer diff</span><span>{showDiff ? "On" : ""}</span></button>
+                <button type="button" onClick={() => setDensity((value) => value === "compact" ? "comfortable" : "compact")} className="flex min-h-11 w-full items-center justify-between rounded-lg px-3 text-left hover:bg-gray-100 dark:hover:bg-gray-800"><span>▤ Compact answers</span><span>{density === "compact" ? "On" : ""}</span></button>
+                <button type="button" onClick={() => { setShowArtifacts((value) => !value); setMobileActionsOpen(false); }} className="flex min-h-11 w-full items-center rounded-lg px-3 text-left hover:bg-gray-100 dark:hover:bg-gray-800">🧩 Artifacts</button>
+                <button type="button" onClick={() => { setShowInsights((value) => !value); setMobileActionsOpen(false); }} className="flex min-h-11 w-full items-center rounded-lg px-3 text-left hover:bg-gray-100 dark:hover:bg-gray-800">📊 Insights</button>
+                <button type="button" onClick={() => { setShowFiles((value) => !value); setMobileActionsOpen(false); }} className="flex min-h-11 w-full items-center rounded-lg px-3 text-left hover:bg-gray-100 dark:hover:bg-gray-800">📁 Files</button>
+                <button type="button" onClick={() => { setShowSnapshots((value) => !value); setMobileActionsOpen(false); }} className="flex min-h-11 w-full items-center rounded-lg px-3 text-left hover:bg-gray-100 dark:hover:bg-gray-800">📌 Pins</button>
+              </div>
+
+              <div className="border-t border-gray-200 py-2 dark:border-gray-700">
+                <div className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Save and export</div>
+                <button type="button" onClick={() => { saveAsPersona(); setMobileActionsOpen(false); }} disabled={session.lanes.length === 0} className="flex min-h-11 w-full items-center rounded-lg px-3 text-left hover:bg-gray-100 disabled:opacity-40 dark:hover:bg-gray-800">★ Save as persona</button>
+                <button type="button" onClick={() => { exportSession("md"); setMobileActionsOpen(false); }} className="flex min-h-11 w-full items-center rounded-lg px-3 text-left hover:bg-gray-100 dark:hover:bg-gray-800">⬇ Export Markdown</button>
+                <button type="button" onClick={() => { exportComparison("docx"); setMobileActionsOpen(false); }} className="flex min-h-11 w-full items-center rounded-lg px-3 text-left hover:bg-gray-100 dark:hover:bg-gray-800">⬇ Export Word</button>
+                <button type="button" onClick={() => { exportComparison("pdf"); setMobileActionsOpen(false); }} className="flex min-h-11 w-full items-center rounded-lg px-3 text-left hover:bg-gray-100 dark:hover:bg-gray-800">⬇ Export PDF</button>
+                <button type="button" onClick={() => { exportSession("json"); setMobileActionsOpen(false); }} className="flex min-h-11 w-full items-center rounded-lg px-3 text-left hover:bg-gray-100 dark:hover:bg-gray-800">⬇ Export JSON</button>
+                <label className="flex min-h-11 cursor-pointer items-center rounded-lg px-3 hover:bg-gray-100 dark:hover:bg-gray-800">⬆ Import JSON<input type="file" accept="application/json" hidden onChange={(e) => { if (e.target.files?.[0]) importSession(e.target.files[0]); setMobileActionsOpen(false); }} /></label>
+              </div>
+
+              <div className="flex items-center gap-2 border-t border-gray-200 pt-3 dark:border-gray-700">
+                <button type="button" onClick={() => { nav("/settings"); setMobileActionsOpen(false); }} className="min-h-11 flex-1 rounded-lg border border-gray-300 px-3 text-sm dark:border-gray-600">Settings</button>
+                <ThemeToggle />
+                <button type="button" onClick={logout} className="min-h-11 rounded-lg border border-gray-300 px-3 text-sm dark:border-gray-600">Sign out</button>
+              </div>
+              <div className="pt-2 text-center text-xs text-gray-500">{user?.email}</div>
+            </div>
+          </div>
+        )}
+
+        <header className="hidden flex-wrap items-center gap-2 border-b border-gray-200 bg-white px-3 py-2 lg:flex dark:border-gray-700 dark:bg-gray-900">
           <label className="sr-only" htmlFor="topic-title">
             Topic title
           </label>
@@ -1338,32 +1526,7 @@ export function ComparePage() {
               type="checkbox"
               checked={!!judgeLane}
               disabled={!session}
-              onChange={(e) => {
-                if (!activeId) return;
-                if (e.target.checked) {
-                  // Default the judge to a known-good provider/model: reuse the first
-                  // responder lane if present, else the first provider that has models.
-                  const responder = session?.lanes.find(
-                    (l) => l.role === "responder",
-                  );
-                  const usable =
-                    providers.find((p) => p.default_model || p.models.length > 0) ||
-                    providers[0];
-                  const provider_id = responder?.provider_id || usable?.id;
-                  const model =
-                    responder?.model ||
-                    usable?.default_model ||
-                    usable?.models[0] ||
-                    "";
-                  if (provider_id && model)
-                    sm.addLane.mutate({
-                      id: activeId,
-                      body: { provider_id, model, role: "judge" },
-                    });
-                } else if (judgeLane) {
-                  sm.removeLane.mutate({ id: activeId, laneId: judgeLane.id });
-                }
-              }}
+              onChange={(e) => setJudgeEnabled(e.target.checked)}
             />
             Judge
           </label>
@@ -1677,9 +1840,7 @@ export function ComparePage() {
               onBranchTurn={branchFrom}
               onPinAnswer={pinAnswer}
               onEditTurn={(turnId, content) => {
-                if (!activeId) return;
-                sm.deleteTurn.mutate({ id: activeId, turnId });
-                setEditDraft({ text: content, ts: Date.now() });
+                setEditDraft({ text: content, ts: Date.now(), turnId });
               }}
               onResendTurn={async (content) => {
                 if (!activeId) return;
@@ -1743,6 +1904,7 @@ export function ComparePage() {
               queuedByLane={queuedByLane}
               onSendQueuedNow={sendQueuedNowToLane}
               onRemoveQueued={removeQueued}
+              mobile={isMobile}
             />
           )}
         </div>
@@ -1768,7 +1930,9 @@ export function ComparePage() {
             onRemoveQueued={(id) => setQueue((q) => q.filter((m) => m.id !== id))}
             initialText={editDraft?.text}
             initialTextKey={editDraft?.ts}
-            autoFocusKey={activeId ?? undefined}
+            editing={!!editDraft?.turnId}
+            onCancelEdit={() => setEditDraft(null)}
+            autoFocusKey={isMobile ? undefined : activeId ?? undefined}
             starters={
               session.turns.length === 0
                 ? startersFor(session.system_prompt)
@@ -1776,7 +1940,7 @@ export function ComparePage() {
             }
             leftAccessory={
               navRowCount > 1 ? (
-                <div className="flex items-center gap-1">
+                <div className="hidden items-center gap-1 lg:flex">
                   <button
                     onClick={() => goRelative(-1)}
                     disabled={navRow <= 0}
@@ -1805,6 +1969,12 @@ export function ComparePage() {
               // then start the new request as fresh response messages.
               if (streaming) await stopAll();
               else clearLive();
+              // Edit is intentionally non-destructive until this point. Cancel leaves the
+              // original turn and every answer untouched; Send replaces it only here.
+              if (editDraft?.turnId && activeId) {
+                await sm.deleteTurn.mutateAsync({ id: activeId, turnId: editDraft.turnId });
+              }
+              setEditDraft(null);
               broadcast(content, attachmentIds, targetLaneIds);
             }}
           />

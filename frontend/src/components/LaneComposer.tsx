@@ -11,6 +11,8 @@ interface Props {
   onRemoveQueued?: (id: string) => void;
   initialText?: string;
   initialTextKey?: number;
+  editing?: boolean;
+  onCancelEdit?: () => void;
   /** Focus the prompt box whenever this changes (e.g. the active chat id). */
   autoFocusKey?: number | string;
   /** Optional control rendered inline in the send row (left of the target selector). */
@@ -38,6 +40,8 @@ export function LaneComposer({
   onEnqueue,
   initialText,
   initialTextKey,
+  editing = false,
+  onCancelEdit,
   autoFocusKey,
   leftAccessory,
   starters,
@@ -68,7 +72,7 @@ export function LaneComposer({
       targetLaneIds: target === "all" ? undefined : [target],
     };
     // Preserve the current response and send this payload when its target lanes are free.
-    if (streaming && onEnqueue) {
+    if (streaming && onEnqueue && !editing) {
       enqueuePayload(payload);
       clearComposer();
       return;
@@ -87,8 +91,8 @@ export function LaneComposer({
     : `Message all lanes…`;
 
   return (
-    <div className="border-t border-gray-200 bg-white p-2 dark:border-gray-700 dark:bg-gray-900">
-      <div className="group w-full px-1">
+    <div className="border-t border-gray-200 bg-white p-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] lg:p-2 dark:border-gray-700 dark:bg-gray-900">
+      <div className="group w-full lg:px-1">
       {starters && starters.length > 0 && (
         <div className="mb-2 flex items-center gap-1.5 overflow-x-auto pb-0.5">
           <span className="shrink-0 text-[11px] font-medium text-gray-500 dark:text-gray-400">
@@ -107,7 +111,7 @@ export function LaneComposer({
           ))}
         </div>
       )}
-      <div className="flex items-end gap-2">
+      <div>
         <PromptField
           value={text}
           onChange={setText}
@@ -121,6 +125,21 @@ export function LaneComposer({
           footer={leftAccessory}
           trailing={
             <>
+        {editing && (
+          <button
+            type="button"
+            onClick={() => {
+              clearComposer();
+              onCancelEdit?.();
+            }}
+            title="Cancel editing and keep the original turn"
+            aria-label="Cancel editing"
+            className="inline-flex min-h-11 shrink-0 items-center justify-center rounded border border-gray-300 px-2 text-sm text-gray-600 hover:bg-gray-100 lg:px-3 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+          >
+            <span className="lg:hidden">✕</span>
+            <span className="hidden lg:inline">Cancel edit</span>
+          </button>
+        )}
         <label className="sr-only" htmlFor="composer-target">
           Which lanes to send to
         </label>
@@ -129,7 +148,21 @@ export function LaneComposer({
           value={target}
           onChange={(e) => setTarget(e.target.value)}
           title="Which lanes to send to"
-          className="rounded border border-gray-300 px-2 py-1.5 text-sm dark:border-gray-600 dark:bg-gray-800"
+          className="min-h-11 w-20 rounded border border-gray-300 px-1 py-1.5 text-sm lg:hidden dark:border-gray-600 dark:bg-gray-800"
+        >
+          <option value="all">All</option>
+          {responders.map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.model}
+            </option>
+          ))}
+        </select>
+        <select
+          value={target}
+          onChange={(e) => setTarget(e.target.value)}
+          title="Which lanes to send to"
+          aria-label="Which lanes to send to"
+          className="hidden rounded border border-gray-300 px-2 py-1.5 text-sm lg:block dark:border-gray-600 dark:bg-gray-800"
         >
           <option value="all">Broadcast to all</option>
           {responders.map((l) => (
@@ -142,7 +175,7 @@ export function LaneComposer({
           <button
             onClick={submit}
             disabled={disabled}
-            className="rounded bg-blue-600 px-4 py-1.5 text-sm font-medium text-white disabled:opacity-40"
+            className="min-h-11 rounded bg-blue-600 px-5 py-1.5 text-sm font-medium text-white disabled:opacity-40 lg:min-h-0 lg:px-4"
           >
             Send
           </button>
@@ -151,7 +184,7 @@ export function LaneComposer({
           }
         />
       </div>
-      <div className="mt-1 px-1 text-[11px] text-gray-500 opacity-0 transition-opacity group-focus-within:opacity-100 dark:text-gray-400">
+      <div className="mt-1 hidden px-1 text-[11px] text-gray-500 opacity-0 transition-opacity group-focus-within:opacity-100 lg:block dark:text-gray-400">
         Enter to send · Shift+Enter for newline · paste or drop an image to attach
       </div>
       </div>

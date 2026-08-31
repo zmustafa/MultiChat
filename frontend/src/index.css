@@ -9,8 +9,15 @@ body,
   height: 100%;
 }
 
+#root {
+  height: 100dvh;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   /* Base foreground/background per theme so any element relying on inherited color stays
      legible in dark mode (Tailwind toggles the `dark` class on <html>). */
@@ -21,6 +28,16 @@ body {
 .dark body {
   color: #e5e7eb; /* gray-200 */
   background-color: #030712; /* gray-950 */
+}
+
+@media (max-width: 1023px) {
+  .mobile-scrollbar-hidden {
+    scrollbar-width: none;
+  }
+
+  .mobile-scrollbar-hidden::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 /* `text-gray-400` is too faint on light backgrounds (fails WCAG AA at ~2.4:1). In light

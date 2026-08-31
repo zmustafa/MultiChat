@@ -61,13 +61,13 @@ export function DiffView({ lanes, providers, messages, turn }: Props) {
           differs
         </span>
       </div>
-      <div className="flex gap-3">
+      <div className="mobile-scrollbar-hidden flex snap-x snap-mandatory gap-3 overflow-x-auto lg:overflow-visible">
         {columns.map(({ lane, lines }) => {
           const provider = providers.find((p) => p.id === lane.provider_id);
           return (
             <div
               key={lane.id}
-              className="w-80 shrink-0 rounded border border-gray-300 p-2 text-xs dark:border-gray-700"
+              className="w-[calc(100vw-1.5rem)] shrink-0 snap-start rounded border border-gray-300 p-2 text-xs lg:w-80 dark:border-gray-700"
             >
               <div className="mb-1 font-semibold">
                 {lane.model}

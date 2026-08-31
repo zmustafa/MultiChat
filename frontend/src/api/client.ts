@@ -1,5 +1,9 @@
+const configuredApiBase = import.meta.env.VITE_API_BASE as string | undefined;
+
+// Production uses the preview server's same-origin /api proxy. This keeps LAN/Tailscale
+// clients on the hostname they used for the UI instead of sending them to their own localhost.
 export const API_BASE =
-  (import.meta.env.VITE_API_BASE as string | undefined) || "http://localhost:5001";
+  configuredApiBase ?? (import.meta.env.PROD ? "" : "http://localhost:5001");
 
 /** Resolve a possibly-relative API media URL (e.g. an uploaded image) against the
  * backend origin so images load from the API server, not the frontend dev server. */

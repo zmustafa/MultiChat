@@ -93,7 +93,7 @@ export function InsightsPanel({
   }
 
   return (
-    <div className="border-b border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-900/40">
+    <div className="fixed inset-x-0 bottom-0 top-11 z-40 overflow-y-auto border-b border-gray-200 bg-gray-50 px-3 py-2 lg:static lg:overflow-visible dark:border-gray-700 dark:bg-gray-900/40">
       <div className="mb-1 flex items-center justify-between">
         <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
           📊 Cross-lane insights
@@ -109,7 +109,7 @@ export function InsightsPanel({
           </button>
           <button
             onClick={onClose}
-            className="rounded px-1 text-xs text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+            className="inline-flex h-11 w-11 items-center justify-center rounded text-lg text-gray-400 hover:text-gray-700 lg:h-auto lg:w-auto lg:px-1 lg:text-xs dark:hover:text-gray-200"
             title="Close"
           >
             ✕

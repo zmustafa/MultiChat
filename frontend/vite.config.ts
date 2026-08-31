@@ -7,6 +7,14 @@ export default defineConfig({
     port: 5000,
     host: true,
   },
+  preview: {
+    port: 7000,
+    host: "0.0.0.0",
+    strictPort: true,
+    proxy: {
+      "/api": "http://127.0.0.1:7001",
+    },
+  },
   build: {
     rollupOptions: {
       output: {

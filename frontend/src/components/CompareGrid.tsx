@@ -35,6 +35,7 @@ interface Props {
   queuedByLane?: Record<string, QueuedMessage[]>;
   onSendQueuedNow?: (msgId: string, laneId: string) => void;
   onRemoveQueued?: (msgId: string) => void;
+  mobile?: boolean;
 }
 
 export function CompareGrid({
@@ -68,8 +69,10 @@ export function CompareGrid({
   queuedByLane,
   onSendQueuedNow,
   onRemoveQueued,
+  mobile = false,
 }: Props) {
   const [maximizedLaneId, setMaximizedLaneId] = useState<string | null>(null);
+  const [mobileLaneId, setMobileLaneId] = useState<string | null>(null);
 
   const allResponders = lanes
     .filter((l) => l.role === "responder")
@@ -77,9 +80,16 @@ export function CompareGrid({
   const responders = allResponders.filter((l) => !l.hidden);
   const closedLanes = allResponders.filter((l) => l.hidden);
 
+  useEffect(() => {
+    if (!mobile) return;
+    if (!responders.some((lane) => lane.id === mobileLaneId)) {
+      setMobileLaneId(responders[0]?.id ?? null);
+    }
+  }, [mobile, mobileLaneId, responders]);
+
   const closedBar =
     closedLanes.length > 0 ? (
-      <div className="flex flex-wrap items-center gap-1.5 border-b border-gray-200 bg-gray-50 px-3 py-1.5 dark:border-gray-700 dark:bg-gray-900/40">
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-gray-200 bg-gray-50 px-2 py-1.5 lg:px-3 dark:border-gray-700 dark:bg-gray-900/40">
         <span className="text-[10px] font-medium uppercase tracking-wide text-gray-400">
           Closed ({closedLanes.length}):
         </span>
@@ -182,9 +192,68 @@ export function CompareGrid({
           onSendQueuedNow ? (msgId) => onSendQueuedNow(msgId, lane.id) : undefined
         }
         onRemoveQueued={onRemoveQueued}
+        mobile={mobile}
       />
     );
   };
+
+  if (mobile) {
+    return (
+      <div className="flex h-full min-h-0 flex-col overflow-hidden">
+        {closedBar}
+        <div
+          role="tablist"
+          aria-label="Model lanes"
+          className="mobile-scrollbar-hidden flex shrink-0 gap-1 overflow-x-auto border-b border-gray-200 bg-gray-50 px-2 py-1 dark:border-gray-700 dark:bg-gray-900"
+        >
+          {responders.map((lane) => {
+            const active = lane.id === mobileLaneId;
+            const state = live[lane.id]?.status || lane.state;
+            const dot =
+              state === "error"
+                ? "bg-red-500"
+                : state === "streaming" || state === "queued"
+                  ? "animate-pulse bg-blue-500"
+                  : state === "done"
+                    ? "bg-green-500"
+                    : "bg-gray-400";
+            return (
+              <button
+                key={lane.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setMobileLaneId(lane.id)}
+                className={`flex h-8 max-w-[12rem] shrink-0 items-center gap-1.5 rounded-full border px-3 text-sm font-medium ${
+                  active
+                    ? "border-brand bg-brand/10 text-brand"
+                    : "border-gray-300 bg-white text-gray-600 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300"
+                }`}
+              >
+                <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} />
+                <span className="truncate">{bestLaneId === lane.id && "⭐ "}{lane.model}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex min-h-0 flex-1 overflow-hidden" data-compare-grid>
+          {responders.map((lane) => {
+            const active = lane.id === mobileLaneId;
+            return (
+              <div
+                key={lane.id}
+                role="tabpanel"
+                aria-hidden={!active}
+                className={active ? "flex min-h-0 min-w-0 flex-1" : "hidden"}
+              >
+                {renderLane(lane)}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
 
   if (maximizedLaneId) {
     const maxed = responders.find((l) => l.id === maximizedLaneId);

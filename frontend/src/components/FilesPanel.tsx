@@ -57,7 +57,7 @@ export function FilesPanel({
   }
 
   return (
-    <div className="border-b border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-900/40">
+    <div className="fixed inset-x-0 bottom-0 top-11 z-40 overflow-y-auto border-b border-gray-200 bg-gray-50 px-3 py-2 lg:static lg:overflow-visible dark:border-gray-700 dark:bg-gray-900/40">
       <div className="mb-1 flex items-center justify-between">
         <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">
           📁 Generated files {files.length > 0 && `(${files.length})`}
@@ -72,7 +72,7 @@ export function FilesPanel({
           </button>
           <button
             onClick={onClose}
-            className="text-xs text-gray-400 hover:text-red-500"
+            className="inline-flex h-11 w-11 items-center justify-center text-lg text-gray-400 hover:text-red-500 lg:h-auto lg:w-auto lg:text-xs"
             title="Close"
           >
             ✕
