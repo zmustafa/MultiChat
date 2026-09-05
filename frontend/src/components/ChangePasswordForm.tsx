@@ -10,7 +10,7 @@ export function ChangePasswordForm({
   onSuccess?: () => void;
   compact?: boolean;
 }) {
-  const { refreshUser } = useAuth();
+  const { user, refreshUser } = useAuth();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -18,6 +18,7 @@ export function ChangePasswordForm({
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const id = useId();
+  const usernameId = `${id}-username`;
   const currentId = `${id}-current`;
   const nextId = `${id}-new`;
   const confirmId = `${id}-confirm`;
@@ -57,12 +58,24 @@ export function ChangePasswordForm({
 
   return (
     <form onSubmit={submit} className={compact ? "space-y-3" : "max-w-sm space-y-3"}>
+      {/* Associate saved passwords with this account, not an unrelated search input. */}
+      <label htmlFor={usernameId} hidden>Username</label>
+      <input
+        id={usernameId}
+        name="username"
+        type="text"
+        autoComplete="username"
+        value={user?.email ?? ""}
+        readOnly
+        hidden
+      />
       <div>
         <label htmlFor={currentId} className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-300">
           Current password
         </label>
         <input
           id={currentId}
+          name="current_password"
           type="password"
           autoComplete="current-password"
           value={current}
@@ -77,6 +90,7 @@ export function ChangePasswordForm({
         </label>
         <input
           id={nextId}
+          name="new_password"
           type="password"
           autoComplete="new-password"
           value={next}
@@ -91,6 +105,7 @@ export function ChangePasswordForm({
         </label>
         <input
           id={confirmId}
+          name="confirm_password"
           type="password"
           autoComplete="new-password"
           value={confirm}

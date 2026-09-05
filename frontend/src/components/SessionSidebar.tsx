@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate } from "react-router";
 import { asUtcDate } from "../api/client";
@@ -91,6 +91,7 @@ export function SessionSidebar({
   // together. The ▾ caret stays a shortcut straight into a specific persona.
   const handleNewChat = () => navigate("/");
   const [query, setQuery] = useState("");
+  const searchId = useId();
   const [results, setResults] = useState<SearchHit[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
@@ -335,6 +336,13 @@ export function SessionSidebar({
       </div>
       <div className="px-2 pb-1">
         <input
+          id={`chat-search-${searchId}`}
+          name="chat-search"
+          type="search"
+          aria-label="Search chats"
+          autoComplete="off"
+          data-lpignore="true"
+          data-1p-ignore="true"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="🔍 Search chats…"
