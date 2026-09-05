@@ -23,6 +23,7 @@ export function SnapshotsPanel({ onClose }: { onClose: () => void }) {
   const [group, setGroup] = useState<string | null>(null);
   const [a, setA] = useState<string | null>(null);
   const [b, setB] = useState<string | null>(null);
+  const [error, setError] = useState("");
 
   async function load() {
     setLoading(true);
@@ -53,8 +54,14 @@ export function SnapshotsPanel({ onClose }: { onClose: () => void }) {
   const snapB = current.find((s) => s.id === b);
 
   async function remove(id: string) {
-    await apiFetch(`/api/snapshots/${id}`, { method: "DELETE" }).catch(() => {});
-    setSnaps((p) => p.filter((s) => s.id !== id));
+    if (!window.confirm("Delete this pinned answer permanently?")) return;
+    setError("");
+    try {
+      await apiFetch(`/api/snapshots/${id}`, { method: "DELETE" });
+      setSnaps((p) => p.filter((s) => s.id !== id));
+    } catch (err) {
+      setError((err as Error).message || "Could not delete the pinned answer.");
+    }
   }
 
   return (
@@ -68,6 +75,7 @@ export function SnapshotsPanel({ onClose }: { onClose: () => void }) {
           <button onClick={onClose} aria-label="Close pinned answers" className="inline-flex h-11 w-11 items-center justify-center text-lg text-gray-400 hover:text-red-500 lg:h-auto lg:w-auto lg:text-xs" title="Close">✕</button>
         </div>
       </div>
+      {error && <div role="alert" className="mb-2 text-xs text-red-600 dark:text-red-400">{error}</div>}
       {loading ? (
         <div className="py-2 text-xs text-gray-400">Loading…</div>
       ) : snaps.length === 0 ? (

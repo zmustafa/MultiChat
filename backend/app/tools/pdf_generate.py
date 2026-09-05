@@ -12,6 +12,7 @@ from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import (
     Image,
+    KeepTogether,
     ListFlowable,
     ListItem,
     Paragraph,
@@ -128,11 +129,21 @@ def _table_flowable(
     """Build a Table whose cells wrap text and whose columns fit the page width."""
     cols = table.get("columns") or []
     rows = table.get("rows") or []
+    if not isinstance(cols, list):
+        raise ValueError("Table columns must be a list.")
+    if not isinstance(rows, list):
+        raise ValueError("Table rows must be a list.")
     if not cols:
+        if rows:
+            raise ValueError("Table rows require column headers.")
         return None
     n = len(cols)
     raw: list[list[str]] = [[str(c) for c in cols]]
-    for r in rows:
+    for row_number, r in enumerate(rows, 1):
+        if not isinstance(r, list):
+            raise ValueError(f"Table row {row_number} must be a list of cells.")
+        if len(r) > n:
+            raise ValueError(f"Table row {row_number} has {len(r)} cells but only {n} columns.")
         raw.append([str(r[i]) if i < len(r) else "" for i in range(n)])
     col_widths = _column_widths(raw, avail_width)
     # Wrap every cell in a Paragraph so long text flows onto multiple lines instead
@@ -140,7 +151,12 @@ def _table_flowable(
     data = [[Paragraph(escape(raw[0][i]), head_style) for i in range(n)]]
     for r in raw[1:]:
         data.append([Paragraph(escape(r[i]), cell_style) for i in range(n)])
-    tbl = Table(data, colWidths=col_widths, hAlign="LEFT", repeatRows=1)
+    # A single paragraph cell can exceed a page. Split its row rather than aborting
+    # the PDF or truncating the text; repeat the headers on continuation pages.
+    tbl = Table(
+        data, colWidths=col_widths, hAlign="LEFT", repeatRows=1,
+        splitByRow=1, splitInRow=1,
+    )
     tbl.setStyle(
         TableStyle(
             [
@@ -317,7 +333,10 @@ class PdfGenerateTool:
                 rightMargin=0.9 * inch,
                 title=title,
             )
-            avail_width = pagesize[0] - doc.leftMargin - doc.rightMargin
+            # SimpleDocTemplate adds a Frame with 6pt padding on every side.
+            # doc.width/height alone therefore overstate the drawable area.
+            avail_width = doc.width - 12
+            avail_height = doc.height - 12
             story: list = [Paragraph(escape(title), title_style)]
             if subtitle:
                 story.append(Paragraph(escape(subtitle), sub_style))
@@ -356,19 +375,33 @@ class PdfGenerateTool:
 
                 image_ref = (sec.get("image") or "").strip()
                 if image_ref:
-                    data = resolve_image_bytes(image_ref)
+                    data = resolve_image_bytes(image_ref, user_id=ctx.user_id)
                     if data:
                         try:
                             reader = ImageReader(io.BytesIO(data))
                             iw, ih = reader.getSize()
-                            max_w = 5.5 * inch
-                            w = min(max_w, iw)
-                            h = w * (ih / iw) if iw else 3 * inch
-                            story.append(Spacer(1, 6))
-                            story.append(Image(io.BytesIO(data), width=w, height=h))
                             caption = (sec.get("caption") or "").strip()
-                            if caption:
-                                story.append(Paragraph(escape(caption), sub_style))
+                            caption_flow = Paragraph(escape(caption), sub_style) if caption else None
+                            caption_space = 0.0
+                            if caption_flow is not None:
+                                _, caption_height = caption_flow.wrap(avail_width, avail_height)
+                                # Ordinary captions fit with the image. A very long
+                                # caption may split normally instead of shrinking the
+                                # image to nothing or discarding caption text.
+                                caption_space = min(
+                                    caption_height + caption_flow.getSpaceAfter(), avail_height / 2
+                                )
+                            max_h = avail_height - caption_space - 12  # surrounding spacers
+                            scale = min(1.0, min(5.5 * inch, avail_width) / iw, max_h / ih)
+                            image = Image(io.BytesIO(data), width=iw * scale, height=ih * scale)
+                            story.append(Spacer(1, 6))
+                            # These are top-level flowables, not children of a table.
+                            # KeepTogether can move them together or split an oversized
+                            # caption without losing text.
+                            if caption_flow is not None:
+                                story.append(KeepTogether([image, caption_flow]))
+                            else:
+                                story.append(image)
                         except Exception:  # noqa: BLE001
                             pass
 

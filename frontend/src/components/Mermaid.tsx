@@ -350,7 +350,11 @@ export const Mermaid = memo(function Mermaid({ code }: { code: string }) {
   // raw definition as a neutral code block rather than a scary error graphic.
   if (!rendered) {
     return (
-      <pre className="my-2 overflow-x-auto rounded bg-gray-100 p-2 text-xs dark:bg-gray-800">
+      <pre
+        className="my-2 overflow-x-auto rounded bg-gray-100 p-2 text-xs dark:bg-gray-800"
+        tabIndex={0}
+        aria-label="Scrollable Mermaid source"
+      >
         <code>{code}</code>
       </pre>
     );

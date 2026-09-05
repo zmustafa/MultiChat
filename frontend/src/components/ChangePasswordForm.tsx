@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { apiFetch } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 
@@ -17,6 +17,10 @@ export function ChangePasswordForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const id = useId();
+  const currentId = `${id}-current`;
+  const nextId = `${id}-new`;
+  const confirmId = `${id}-confirm`;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -54,10 +58,11 @@ export function ChangePasswordForm({
   return (
     <form onSubmit={submit} className={compact ? "space-y-3" : "max-w-sm space-y-3"}>
       <div>
-        <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-300">
+        <label htmlFor={currentId} className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-300">
           Current password
         </label>
         <input
+          id={currentId}
           type="password"
           autoComplete="current-password"
           value={current}
@@ -67,10 +72,11 @@ export function ChangePasswordForm({
         />
       </div>
       <div>
-        <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-300">
+        <label htmlFor={nextId} className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-300">
           New password
         </label>
         <input
+          id={nextId}
           type="password"
           autoComplete="new-password"
           value={next}
@@ -80,10 +86,11 @@ export function ChangePasswordForm({
         />
       </div>
       <div>
-        <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-300">
+        <label htmlFor={confirmId} className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-300">
           Confirm new password
         </label>
         <input
+          id={confirmId}
           type="password"
           autoComplete="new-password"
           value={confirm}

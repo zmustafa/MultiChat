@@ -12,8 +12,9 @@ import hashlib
 import hmac
 import json
 from collections import OrderedDict
-from collections.abc import AsyncIterator
-from typing import Any
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
+from typing import Any, cast
 
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 
@@ -237,15 +238,16 @@ class OpenAIProvider(LLMProvider):
         messages: list[dict[str, Any]],
         tools: list[ToolSpec] | None = None,
         max_tokens: int | None = None,
-    ) -> AsyncIterator[StreamEvent]:
+    ) -> AsyncGenerator[StreamEvent, None]:
         # GPT-5.6 defaults to reasoning_effort=auto, a combination the Chat
         # Completions endpoint rejects when function tools are present. Avoid the
         # known failing request and use the endpoint that supports both features.
         if tools and self._uses_official_openai_api() and (
             self._model.startswith("gpt-5.6") or self._model in _RESPONSES_FOR_TOOLS
         ):
-            async for event in self._responses_stream(messages, tools, max_tokens):
-                yield event
+            async with aclosing(self._responses_stream(messages, tools, max_tokens)) as response_stream:
+                async for event in response_stream:
+                    yield event
             return
 
         tool_fragments: dict[int, dict[str, Any]] = {}
@@ -293,8 +295,9 @@ class OpenAIProvider(LLMProvider):
 
             if self._should_fallback_to_responses(msg, tools):
                 _RESPONSES_FOR_TOOLS.add(self._model)
-                async for event in self._responses_stream(messages, tools, max_tokens):
-                    yield event
+                async with aclosing(self._responses_stream(messages, tools, max_tokens)) as response_stream:
+                    async for event in response_stream:
+                        yield event
                 return
             if not retry:
                 raise
@@ -305,42 +308,45 @@ class OpenAIProvider(LLMProvider):
                 retry_msg = str(retry_exc).lower()
                 if self._should_fallback_to_responses(retry_msg, tools):
                     _RESPONSES_FOR_TOOLS.add(self._model)
-                    async for event in self._responses_stream(messages, tools, max_tokens):
-                        yield event
+                    async with aclosing(self._responses_stream(messages, tools, max_tokens)) as response_stream:
+                        async for event in response_stream:
+                            yield event
                     return
                 raise
-        yield StreamEvent(type="status", phase="request_sent", text="Request sent · awaiting response…")
-
         prompt_tokens = 0
         completion_tokens = 0
         first_chunk = True
 
-        async for chunk in stream:
-            if first_chunk:
-                first_chunk = False
-                yield StreamEvent(type="status", phase="response", text="Response received · generating…")
-            if getattr(chunk, "usage", None):
-                prompt_tokens = chunk.usage.prompt_tokens or 0
-                completion_tokens = chunk.usage.completion_tokens or 0
+        # The SDK closes a fully consumed response, but abandoning its iterator does
+        # not close the HTTP body. Cover even a close at the request_sent yield.
+        async with stream:
+            yield StreamEvent(type="status", phase="request_sent", text="Request sent · awaiting response…")
+            async for chunk in stream:
+                if first_chunk:
+                    first_chunk = False
+                    yield StreamEvent(type="status", phase="response", text="Response received · generating…")
+                if getattr(chunk, "usage", None):
+                    prompt_tokens = chunk.usage.prompt_tokens or 0
+                    completion_tokens = chunk.usage.completion_tokens or 0
 
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
 
-            if delta and delta.content:
-                yield StreamEvent(type="token", text=delta.content)
+                if delta and delta.content:
+                    yield StreamEvent(type="token", text=delta.content)
 
-            if delta and delta.tool_calls:
-                for tc in delta.tool_calls:
-                    frag = tool_fragments.setdefault(
-                        tc.index, {"id": "", "name": "", "args": ""}
-                    )
-                    if tc.id:
-                        frag["id"] = tc.id
-                    if tc.function and tc.function.name:
-                        frag["name"] = tc.function.name
-                    if tc.function and tc.function.arguments:
-                        frag["args"] += tc.function.arguments
+                if delta and delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        frag = tool_fragments.setdefault(
+                            tc.index, {"id": "", "name": "", "args": ""}
+                        )
+                        if tc.id:
+                            frag["id"] = tc.id
+                        if tc.function and tc.function.name:
+                            frag["name"] = tc.function.name
+                        if tc.function and tc.function.arguments:
+                            frag["args"] += tc.function.arguments
 
         if tool_fragments:
             calls: list[ToolCallRequest] = []
@@ -415,7 +421,7 @@ class OpenAIProvider(LLMProvider):
         messages: list[dict[str, Any]],
         tools: list[ToolSpec] | None,
         max_tokens: int | None,
-    ) -> AsyncIterator[StreamEvent]:
+    ) -> AsyncGenerator[StreamEvent, None]:
         responses = ChatGPTResponsesProvider(
             model=self._model,
             oauth_token=self._api_key,
@@ -424,7 +430,9 @@ class OpenAIProvider(LLMProvider):
             default_headers=self._default_headers,
             chatgpt_mode=False,
         )
-        return responses.stream(messages, tools, max_tokens)
+        # This concrete provider implements stream as an async generator; its shared
+        # interface annotation only advertises AsyncIterator, which omits aclose().
+        return cast(AsyncGenerator[StreamEvent, None], responses.stream(messages, tools, max_tokens))
 
     async def list_models(self) -> list[str]:
         try:
@@ -444,11 +452,12 @@ class OpenAIProvider(LLMProvider):
             # Some OpenAI-compatible endpoints don't expose /models; fall back to a
             # tiny generation to validate connectivity + credentials.
             try:
-                async for ev in self.stream(
+                async with aclosing(self.stream(
                     [{"role": "user", "content": "ping"}], max_tokens=1
-                ):
-                    if ev.type in ("token", "done"):
-                        return True, "Connection OK"
+                )) as stream:
+                    async for ev in stream:
+                        if ev.type in ("token", "done"):
+                            return True, "Connection OK"
                 return True, "Connection OK"
             except Exception as exc:  # noqa: BLE001
                 detail = str(exc) or str(models_exc)

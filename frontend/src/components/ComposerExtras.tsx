@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { apiFetch, mediaUrl } from "../api/client";
+import { apiFetch } from "../api/client";
 import type { Attachment } from "../api/types";
 import { useDismiss } from "../hooks/useDismiss";
 import { useSnippets } from "../hooks/useExtras";
 import { ScreenshotCapture } from "./ScreenshotCapture";
+import { AuthenticatedImage } from "./AuthenticatedMedia";
 
 /**
  * Dictation for a prompt box.
@@ -341,8 +342,8 @@ export function PromptField({
               {attachments.map((a) => (
                 <div key={a.id} className="relative">
                   {a.kind === "image" ? (
-                    <img
-                      src={mediaUrl(a.url)}
+                    <AuthenticatedImage
+                      src={a.url}
                       alt={a.filename}
                       title={a.filename}
                       className="h-16 rounded border border-gray-200 object-cover dark:border-gray-700"

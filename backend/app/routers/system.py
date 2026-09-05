@@ -5,7 +5,9 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.orm import Session as DbSession
+from starlette.concurrency import run_in_threadpool
 
+from .. import system_backup
 from ..db import get_db
 from ..models import User
 from ..security import current_user
@@ -37,14 +39,20 @@ async def import_everything(
     db: DbSession = Depends(get_db),
 ) -> dict:
     """Restore a backup ZIP. This REPLACES all of the current user's existing data."""
-    data = await file.read()
+    try:
+        data = await file.read(system_backup.MAX_BACKUP_BYTES + 1)
+    finally:
+        await file.close()
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > system_backup.MAX_BACKUP_BYTES:
+        raise HTTPException(status_code=400, detail="Backup exceeds compressed size limit")
     try:
-        summary = restore_import(db, user, data)
+        summary = await run_in_threadpool(restore_import, db, user, data)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as exc:  # noqa: BLE001
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Import failed: {exc}")
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Import failed")
     return {"ok": True, "imported": summary}

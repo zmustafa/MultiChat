@@ -313,13 +313,13 @@ export function AnalyticsPage() {
     <div className="flex h-full flex-col bg-gray-50 dark:bg-gray-950">
       <header className="flex items-center justify-between border-b border-gray-200 bg-white px-4 py-2 dark:border-gray-700 dark:bg-gray-900">
         <div className="flex items-center gap-3">
-          <Link to="/" className="text-sm text-blue-500">
+          <Link to="/" className="text-sm text-blue-700 dark:text-blue-300">
             ← Chat
           </Link>
           <h1 className="text-lg font-semibold">📊 Insights</h1>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-500">{user?.email}</span>
+          <span className="hidden text-xs text-gray-500 sm:inline">{user?.email}</span>
           <ThemeToggle />
           <button
             onClick={logout}
@@ -412,7 +412,7 @@ export function AnalyticsPage() {
                   </div>
                   <div className="mb-1 flex items-center justify-between text-xs">
                     <span className="text-gray-500">Estimated cost</span>
-                    <span className="font-semibold text-green-600">
+                    <span className="font-semibold text-green-700 dark:text-green-400">
                       ${(tokens?.estimated_cost ?? 0).toFixed(2)}
                     </span>
                   </div>
@@ -507,7 +507,7 @@ export function AnalyticsPage() {
 
               {/* Punch card */}
               <Card title="Activity punch-card — busiest weekday × hour">
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto" tabIndex={0} aria-label="Scrollable usage table">
                   <div className="min-w-[640px]">
                     <div className="flex">
                       <div className="w-8 shrink-0" />
@@ -674,7 +674,7 @@ function Bar({ value, max }: { value: number; max: number }) {
 function Table({ rows, keyLabel }: { rows: Agg[]; keyLabel: string }) {
   const maxTokens = Math.max(1, ...rows.map((r) => r.completion_tokens));
   return (
-    <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+    <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700" tabIndex={0} aria-label="Scrollable analytics table">
       <table className="w-full text-sm">
         <thead className="bg-gray-50 text-left text-xs text-gray-500 dark:bg-gray-800/50">
           <tr>
@@ -754,7 +754,7 @@ function CouncilSection() {
           Is it worth it? →
         </Link>
       </h2>
-      <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
+      <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900" tabIndex={0} aria-label="Scrollable council table">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500 dark:bg-gray-800">
             <tr>

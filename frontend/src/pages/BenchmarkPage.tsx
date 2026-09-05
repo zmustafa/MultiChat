@@ -217,10 +217,11 @@ export function BenchmarkPage() {
             </div>
             <div className="space-y-2">
               <div>
-                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                <label htmlFor="benchmark-judge" className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
                   Judge (scores blind)
                 </label>
                 <select
+                  id="benchmark-judge"
                   value={judgeKey}
                   onChange={(e) => setJudgeKey(e.target.value)}
                   className="mt-1 w-full rounded border border-gray-300 bg-white px-2 py-1 text-xs dark:border-gray-600 dark:bg-gray-800"
@@ -278,10 +279,11 @@ export function BenchmarkPage() {
           </section>
 
           <section>
-            <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+            <label htmlFor="benchmark-prompts" className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
               Prompts (one per line) — use questions you actually care about
             </label>
             <textarea
+              id="benchmark-prompts"
               value={prompts}
               onChange={(e) => setPrompts(e.target.value)}
               rows={4}

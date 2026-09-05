@@ -9,7 +9,7 @@ export const API_BASE =
  * backend origin so images load from the API server, not the frontend dev server. */
 export function mediaUrl(url: string): string {
   if (!url) return url;
-  if (/^https?:\/\//.test(url) || url.startsWith("data:")) return url;
+  if (/^https?:\/\//i.test(url) || url.startsWith("data:")) return url;
   return `${API_BASE}${url}`;
 }
 
@@ -22,14 +22,32 @@ export function asUtcDate(iso: string): Date {
 }
 
 const TOKEN_KEY = "multichat_token";
+// Unlike ETag invalidation, a token transition makes every old result unusable.
+let authGeneration = 0;
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
 
 export function setToken(token: string | null): void {
+  const previous = getToken();
   if (token) localStorage.setItem(TOKEN_KEY, token);
   else localStorage.removeItem(TOKEN_KEY);
+  if (getToken() !== previous) {
+    authGeneration++;
+    clearEtagCache();
+  }
+}
+
+function captureAuthGuard(): () => void {
+  const token = getToken();
+  const generation = authGeneration;
+  return () => {
+    // The generation also catches a token changing away and back while awaiting.
+    if (generation !== authGeneration || token !== getToken()) {
+      throw new DOMException("Authentication changed during the request", "AbortError");
+    }
+  };
 }
 
 function authHeaders(extra?: Record<string, string>): Record<string, string> {
@@ -39,32 +57,92 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
   return headers;
 }
 
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 export async function apiFetch<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const isForm = options.body instanceof FormData;
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: authHeaders({
-      ...(isForm ? {} : { "Content-Type": "application/json" }),
-      ...(options.headers as Record<string, string>),
-    }),
-  });
-  if (res.status === 204) return undefined as T;
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const body = await res.json();
-      detail = body.detail || detail;
-    } catch {
-      /* ignore */
+  const assertCurrentAuth = captureAuthGuard();
+  try {
+    const isForm = options.body instanceof FormData;
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers: authHeaders({
+        ...(isForm ? {} : { "Content-Type": "application/json" }),
+        ...(options.headers as Record<string, string>),
+      }),
+    });
+    assertCurrentAuth();
+    if (res.status === 204) return undefined as T;
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const body = await res.json();
+        detail = body.detail || detail;
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(detail, res.status);
     }
-    throw new Error(detail);
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("application/json")) return (await res.json()) as T;
+    return (await res.text()) as unknown as T;
+  } finally {
+    // Cover body decoding and errors as well as the initial fetch, before callers see them.
+    assertCurrentAuth();
   }
-  const ct = res.headers.get("content-type") || "";
-  if (ct.includes("application/json")) return (await res.json()) as T;
-  return (await res.text()) as unknown as T;
+}
+
+/** Authenticate only media on our API origin and within /api/, never arbitrary URLs. */
+export async function fetchMediaBlob(url: string): Promise<{ blob: Blob; filename?: string }> {
+  const apiUrl = new URL(API_BASE || "/", window.location.href);
+  const resolved = new URL(url, apiUrl);
+  const isApiMedia =
+    /^https?:$/.test(resolved.protocol) &&
+    resolved.origin === apiUrl.origin &&
+    resolved.pathname.startsWith("/api/") &&
+    !resolved.username && !resolved.password;
+  const res = await fetch(resolved.href, {
+    headers: isApiMedia ? authHeaders() : {},
+    credentials: "omit",
+    // A redirect could forward Bearer auth to a same-origin non-API endpoint.
+    ...(isApiMedia ? { redirect: "error" as const } : {}),
+  });
+  if (!res.ok) throw new ApiError(res.statusText || "Could not load file", res.status);
+  const disposition = res.headers.get("content-disposition") || "";
+  // Tolerate nonstandard quotes around the RFC 5987 extended value.
+  const extended = /filename\*=(?:"UTF-8''([^"]*)"|UTF-8''([^;]*))/i.exec(disposition);
+  const encoded = extended?.[1] ?? extended?.[2]?.trim();
+  const quoted = /filename="([^"]+)"/i.exec(disposition)?.[1];
+  let filename = quoted;
+  if (encoded) {
+    try {
+      filename = decodeURIComponent(encoded);
+    } catch {
+      // A malformed filename must not discard valid bytes; keep filename= or the caller's fallback.
+    }
+  }
+  if (filename) filename = filename.replace(/[\\/]/g, "_");
+  return { blob: await res.blob(), filename };
+}
+
+/** Download a protected API file without putting the long-lived Bearer token in its URL. */
+export async function downloadMedia(url: string, fallbackName?: string): Promise<void> {
+  const { blob, filename } = await fetchMediaBlob(url);
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename || fallbackName || "download";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(objectUrl);
 }
 
 export interface SSEEvent {
@@ -78,36 +156,57 @@ export interface SSEEvent {
  * answer 304 instead of re-sending hundreds of KB of markdown.
  */
 const etagCache = new Map<string, { etag: string; body: unknown }>();
+let etagToken: string | null = null;
+let etagGeneration = 0;
 
 export async function apiFetchCached<T>(path: string): Promise<T> {
-  const cached = etagCache.get(path);
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: authHeaders(
-      cached ? { "If-None-Match": cached.etag } : undefined,
-    ),
-  });
-  if (res.status === 304 && cached) return cached.body as T;
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const body = await res.json();
-      detail = body.detail || detail;
-    } catch {
-      /* ignore */
-    }
-    // A stale entry must not outlive a failed revalidation.
-    etagCache.delete(path);
-    throw new Error(detail);
+  const token = getToken();
+  // Also notice token changes made by another tab through localStorage.
+  if (token !== etagToken) {
+    clearEtagCache();
+    etagToken = token;
   }
-  const body = (await res.json()) as T;
-  const etag = res.headers.get("etag");
-  if (etag) etagCache.set(path, { etag, body });
-  else etagCache.delete(path);
-  return body;
+  const generation = etagGeneration;
+  const isCurrent = () => generation === etagGeneration && token === getToken();
+  const assertCurrentAuth = captureAuthGuard();
+  try {
+    const cached = etagCache.get(path);
+    const res = await fetch(`${API_BASE}${path}`, {
+      headers: authHeaders(
+        cached ? { "If-None-Match": cached.etag } : undefined,
+      ),
+    });
+    assertCurrentAuth();
+    if (res.status === 304 && cached) return cached.body as T;
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const body = await res.json();
+        detail = body.detail || detail;
+      } catch {
+        /* ignore */
+      }
+      // A stale entry must not outlive a failed revalidation.
+      if (isCurrent()) etagCache.delete(path);
+      throw new ApiError(detail, res.status);
+    }
+    const body = (await res.json()) as T;
+    const etag = res.headers.get("etag");
+    // clearEtagCache/sign-out may happen while either fetch or JSON decoding awaits.
+    if (isCurrent()) {
+      if (etag) etagCache.set(path, { etag, body });
+      else etagCache.delete(path);
+    }
+    return body;
+  } finally {
+    // Reject stale 200/304 results too, not just their writes to the ETag cache.
+    assertCurrentAuth();
+  }
 }
 
 /** Drop cached transcript bodies (called on sign-out so nothing leaks between users). */
 export function clearEtagCache(): void {
+  etagGeneration++;
   etagCache.clear();
 }
 
@@ -124,6 +223,16 @@ export function streamSSE(
 ): AbortController {
   const controller = new AbortController();
   (async () => {
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let finishedReading = false;
+    let cancellation: Promise<void> | undefined;
+    const cancelReader = () => {
+      if (reader && !cancellation) {
+        // Cancellation can reject if the source already errored; preserve the original error.
+        cancellation = reader.cancel().catch(() => {});
+      }
+    };
+    controller.signal.addEventListener("abort", cancelReader);
     try {
       const res = await fetch(`${API_BASE}${path}`, {
         method: "POST",
@@ -134,35 +243,71 @@ export function streamSSE(
       if (!res.ok || !res.body) {
         throw new Error(`Stream failed: HTTP ${res.status}`);
       }
-      const reader = res.body.getReader();
+      reader = res.body.getReader();
+      if (controller.signal.aborted) return;
       const decoder = new TextDecoder();
       let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() || "";
-        for (const part of parts) {
-          const lines = part.split("\n");
-          let event = "message";
-          let dataStr = "";
-          for (const line of lines) {
-            if (line.startsWith("event:")) event = line.slice(6).trim();
-            else if (line.startsWith("data:")) dataStr += line.slice(5).trim();
-          }
-          if (!dataStr) continue;
+      let event = "message";
+      let dataLines: string[] = [];
+      const consumeLine = (line: string) => {
+        if (line === "") {
+          const name = event || "message";
+          const dataStr = dataLines.join("\n");
+          event = "message";
+          dataLines = [];
+          if (!dataStr) return;
+          let data: unknown;
           try {
-            onEvent({ event, data: JSON.parse(dataStr) });
+            data = JSON.parse(dataStr);
           } catch {
-            /* ignore malformed */
+            return; // Ignore malformed JSON, not exceptions thrown by the consumer.
           }
+          onEvent({ event: name, data });
+          return;
         }
+        if (line.startsWith(":")) return;
+        const colon = line.indexOf(":");
+        const field = colon < 0 ? line : line.slice(0, colon);
+        let value = colon < 0 ? "" : line.slice(colon + 1);
+        if (value.startsWith(" ")) value = value.slice(1);
+        if (field === "event") event = value;
+        else if (field === "data") dataLines.push(value);
+      };
+      const consume = (text: string, eof = false) => {
+        buffer += text;
+        const endings = /\r\n|\r|\n/g;
+        let start = 0;
+        let match: RegExpExecArray | null;
+        while (!controller.signal.aborted && (match = endings.exec(buffer))) {
+          // A CR at a chunk boundary may be the first half of CRLF.
+          if (!eof && match[0] === "\r" && endings.lastIndex === buffer.length) break;
+          const line = buffer.slice(start, match.index);
+          start = endings.lastIndex;
+          consumeLine(line);
+        }
+        buffer = buffer.slice(start);
+      };
+      while (!controller.signal.aborted) {
+        const { done, value } = await reader.read();
+        if (controller.signal.aborted) return;
+        if (done) {
+          finishedReading = true;
+          consume(decoder.decode(), true);
+          break; // Per SSE framing, an event without a terminating blank line is incomplete.
+        }
+        consume(decoder.decode(value, { stream: true }));
       }
-      onDone?.();
+      if (!controller.signal.aborted) onDone?.();
     } catch (err) {
-      if ((err as Error).name !== "AbortError") {
+      if (!controller.signal.aborted && (err as Error).name !== "AbortError") {
         onError?.(err as Error);
+      }
+    } finally {
+      controller.signal.removeEventListener("abort", cancelReader);
+      if (reader) {
+        if (!finishedReading) cancelReader();
+        if (cancellation) await cancellation;
+        reader.releaseLock();
       }
     }
   })();

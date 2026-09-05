@@ -267,7 +267,8 @@ def _export_pdf(db, session, path, diagrams=None) -> None:
             story.append(Paragraph(escape(lane_label(lane)), lane_style))
             story.extend(
                 markdown_pdf_flowables(
-                    msg.content, body, diagrams=diagrams, content_width=content_width
+                    msg.content, body, diagrams=diagrams, content_width=content_width,
+                    user_id=session.user_id, db=db,
                 )
             )
     doc.build(
@@ -481,7 +482,8 @@ def export_message_pdf(
     )
     story.extend(
         markdown_pdf_flowables(
-            message.content or "", base, diagrams=diagrams, content_width=width
+            message.content or "", base, diagrams=diagrams, content_width=width,
+            user_id=session.user_id, db=db,
         )
     )
 
@@ -647,7 +649,8 @@ def export_deliberation_pdf(db: DbSession, run, diagrams=None) -> tuple[str, str
             if body and full_body:
                 story.extend(
                     markdown_pdf_flowables(
-                        body, base, diagrams=diagrams, content_width=width
+                        body, base, diagrams=diagrams, content_width=width,
+                        user_id=run.user_id, db=db,
                     )
                 )
         trace = traces.get(round_index)
@@ -673,7 +676,8 @@ def export_deliberation_pdf(db: DbSession, run, diagrams=None) -> tuple[str, str
         story.append(Paragraph("SYNTHESIS", label))
         story.extend(
             markdown_pdf_flowables(
-                run.synthesis, base, diagrams=diagrams, content_width=width
+                run.synthesis, base, diagrams=diagrams, content_width=width,
+                user_id=run.user_id, db=db,
             )
         )
 
@@ -684,7 +688,8 @@ def export_deliberation_pdf(db: DbSession, run, diagrams=None) -> tuple[str, str
             _accent_card(
                 [Paragraph("MINORITY REPORT \u2014 WHAT THE PANEL DID NOT SETTLE", label)]
                 + markdown_pdf_flowables(
-                    run.minority_report, small, content_width=width - 24
+                    run.minority_report, small, content_width=width - 24,
+                    user_id=run.user_id, db=db, in_table=True,
                 ),
                 width, bg="#FFFBEB", accent="#F59E0B",
             )

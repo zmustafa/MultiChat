@@ -102,13 +102,11 @@ async def upload(
 @router.get("/{attachment_id}")
 def get_upload(
     attachment_id: str,
+    user: User = Depends(current_user),
     db: DbSession = Depends(get_db),
 ) -> FileResponse:
-    # Served without an auth header so that plain <img src="…"> tags can load the image
-    # (browsers can't attach a Bearer token to image requests). Attachment ids are
-    # unguessable UUIDs; this app is single-user and local.
     att = db.get(Attachment, attachment_id)
-    if not att:
+    if not att or att.user_id != user.id:
         raise HTTPException(status_code=404, detail="Attachment not found")
     path = os.path.join(settings.UPLOAD_DIR, att.storage_path)
     if not os.path.exists(path):
@@ -118,4 +116,5 @@ def get_upload(
         path,
         media_type=att.mime_type,
         content_disposition_type="inline",
+        headers={"Cache-Control": "private, no-store"},
     )

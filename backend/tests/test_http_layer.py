@@ -111,3 +111,84 @@ def test_transcript_of_another_user_is_404(client, transcript, db):
     db.commit()
     headers = {"Authorization": f"Bearer {create_access_token(intruder.id)}"}
     assert client.get(f"/api/sessions/{transcript.id}", headers=headers).status_code == 404
+
+
+def test_upload_bytes_require_owner_authentication(client, auth, db, user):
+    from pathlib import Path
+
+    from app import models
+    from app.security import create_access_token
+
+    stored = "owned-image.png"
+    Path(settings.UPLOAD_DIR, stored).write_bytes(b"not-a-real-image")
+    attachment = models.Attachment(
+        user_id=user.id,
+        kind="image",
+        filename="private.png",
+        mime_type="image/png",
+        size_bytes=16,
+        storage_path=stored,
+    )
+    intruder = models.User(email="upload-intruder@example.test", password_hash="x")
+    db.add_all([attachment, intruder])
+    db.commit()
+
+    path = f"/api/uploads/{attachment.id}"
+    owned = client.get(path, headers=auth)
+    assert owned.status_code == 200
+    assert owned.headers["cache-control"] == "private, no-store"
+    assert client.get(path).status_code == 401
+    intruder_auth = {"Authorization": f"Bearer {create_access_token(intruder.id)}"}
+    assert client.get(path, headers=intruder_auth).status_code == 404
+
+
+def test_generated_files_require_owner_authentication(client, auth, db, user):
+    from pathlib import Path
+
+    from app import models
+    from app.security import create_access_token
+
+    stored = f"{'a' * 32}.txt"
+    generated = Path(settings.UPLOAD_DIR, "generated")
+    generated.mkdir(exist_ok=True)
+    Path(generated, stored).write_text("private output", encoding="utf-8")
+    row = models.GeneratedFile(
+        user_id=user.id,
+        stored_name=stored,
+        download_name="private.txt",
+        mime_type="text/plain",
+        size_bytes=14,
+        kind="txt",
+    )
+    intruder = models.User(email="file-intruder@example.test", password_hash="x")
+    db.add_all([row, intruder])
+    db.commit()
+
+    path = f"/api/files/{stored}"
+    owned = client.get(path, headers=auth)
+    assert owned.status_code == 200
+    assert owned.headers["cache-control"] == "private, no-store"
+    assert client.get(path).status_code == 401
+    intruder_auth = {"Authorization": f"Bearer {create_access_token(intruder.id)}"}
+    assert client.get(path, headers=intruder_auth).status_code == 404
+
+
+def test_active_deliberation_session_cannot_be_permanently_deleted(
+    client, auth, transcript, db, user
+):
+    from app import models
+
+    run = models.DeliberationRun(
+        user_id=user.id,
+        session_id=transcript.id,
+        turn_id=transcript.turns[0].id,
+        status="running",
+        prompt="still working",
+    )
+    db.add(run)
+    db.commit()
+
+    response = client.delete(f"/api/sessions/{transcript.id}", headers=auth)
+
+    assert response.status_code == 409
+    assert db.get(models.Session, transcript.id) is not None

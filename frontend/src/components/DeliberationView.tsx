@@ -20,9 +20,10 @@ import {
 } from "../api/deliberation";
 import type { ConvergenceTrace, DeliberationStep, VoteResult } from "../api/deliberation";
 import { mergeSteps, useDeliberation } from "../hooks/useDeliberation";
-import { apiFetch, mediaUrl } from "../api/client";
+import { apiFetch, downloadMedia } from "../api/client";
 import { downloadMessagePdf } from "../utils/messagePdf";
 import { useDismiss } from "../hooks/useDismiss";
+import { AuthenticatedImageLink } from "./AuthenticatedMedia";
 
 /** Copy any block of text, with the usual "did it work?" feedback. */
 function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
@@ -72,7 +73,7 @@ function AnswerModal({
           <span className="truncate text-sm font-semibold text-gray-800 dark:text-gray-100">
             {title}
           </span>
-          <span className="ml-auto flex items-center gap-2">
+          <span className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
             <CopyButton text={content} />
             <button
               onClick={onClose}
@@ -327,7 +328,7 @@ function StepCard({
               labelAfter="synthesis"
             />
           ) : (
-            <div ref={bodyRef} className="min-w-0 overflow-x-auto">
+            <div ref={bodyRef} className="min-w-0 overflow-x-auto" tabIndex={0} aria-label={`${model} answer`}>
               <MessageRenderer content={body} />
             </div>
           )}
@@ -714,12 +715,7 @@ export function DeliberationView({ runId }: { runId: string }) {
     setBusy("export");
     try {
       const res = await exportDeliberation(runId, fmt);
-      const a = document.createElement("a");
-      a.href = mediaUrl(res.url);
-      a.download = res.download_name;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      await downloadMedia(res.url, res.download_name);
       setToast({ kind: "info", text: `Saved ${res.download_name}` });
     } catch (e) {
       fail(e);
@@ -818,13 +814,13 @@ export function DeliberationView({ runId }: { runId: string }) {
                   : `⚠ ${run.status.replace("_", " ")}`}
             </span>
           )}
-          <span className="ml-auto flex items-center gap-2">
-            <span className="relative">
+          <span className="flex w-full min-w-0 flex-wrap items-center gap-2 lg:ml-auto lg:w-auto lg:justify-end">
+            <span className="relative w-full sm:w-auto">
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="🔍 Find in this deliberation…"
-                className="w-52 rounded border border-gray-300 px-2 py-1 text-xs focus:border-brand focus:outline-none dark:border-gray-600 dark:bg-gray-800"
+                className="w-full rounded border border-gray-300 px-2 py-1 text-xs focus:border-brand focus:outline-none sm:w-52 dark:border-gray-600 dark:bg-gray-800"
               />
               {!!needle && (
                 <span className="absolute right-2 top-1.5 text-[10px] text-gray-400">
@@ -1048,14 +1044,13 @@ export function DeliberationView({ runId }: { runId: string }) {
               {!!run?.images?.length && (
                 <div className="mt-2 flex flex-wrap gap-2">
                   {run.images.map((img) => (
-                    <a key={img.id} href={mediaUrl(img.url)} target="_blank" rel="noreferrer">
-                      <img
-                        src={mediaUrl(img.url)}
-                        alt={img.filename}
-                        title={img.filename}
-                        className="h-20 rounded border border-gray-300 object-cover dark:border-gray-600"
-                      />
-                    </a>
+                    <AuthenticatedImageLink
+                      key={img.id}
+                      src={img.url}
+                      alt={img.filename}
+                      title={img.filename}
+                      imageClassName="h-20 rounded border border-gray-300 object-cover dark:border-gray-600"
+                    />
                   ))}
                 </div>
               )}
@@ -1149,7 +1144,7 @@ export function DeliberationView({ runId }: { runId: string }) {
                     </span>
                   )}
                 </div>
-                <div id="delib-synthesis" className="min-w-0 overflow-x-auto">
+                <div id="delib-synthesis" className="min-w-0 overflow-x-auto" tabIndex={0} aria-label="Synthesis answer">
                   <MessageRenderer content={synthesis.answer} />
                 </div>
 

@@ -96,7 +96,7 @@ def test_disk_mirror_matches_the_buffer(tmp_path, monkeypatch):
                 run_hub.sse("chunk", {"lane_id": "a", "delta": f"{step},"})
             )
         await hub.put(run_hub.sse("done", {"turn_id": "t4"}))
-        hub.finish()
+        await hub.finish()
         return hub
 
     hub = asyncio.run(scenario())

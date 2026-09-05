@@ -422,10 +422,11 @@ export function DeliberationLaunch({ personaId }: { personaId: string | null }) 
 
               <div className="flex flex-wrap items-end gap-4">
                 <div>
-                  <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                  <label htmlFor="deliberation-judge" className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
                     Judge / synthesizer
                   </label>
                   <select
+                    id="deliberation-judge"
                     value={judgeKey}
                     onChange={(e) => setJudgeKey(e.target.value)}
                     className="mt-1 block rounded border border-gray-300 px-2 py-1 text-xs dark:border-gray-600 dark:bg-gray-800"

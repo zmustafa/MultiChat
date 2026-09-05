@@ -18,6 +18,8 @@ from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 from xml.sax.saxutils import escape
 
+from sqlalchemy.orm import Session as DbSession
+
 # ---------------------------------------------------------------------------
 # Parsing
 # ---------------------------------------------------------------------------
@@ -895,18 +897,81 @@ def _fit_col_widths(
     return [m + slack * w / total_weight for m, w in zip(mins, weights, strict=False)]
 
 
+def _pdf_table_cell(flowable):
+    """Give nested content the geometry ReportLab's in-row splitter expects.
+
+    Tables and custom cards return a size from wrap() without setting ``height``;
+    the cell splitter reads that attribute directly and ignores external spacing.
+    Include the spacing in the measured box and adapt split fragments as well.
+    """
+    from reportlab.platypus import Flowable, ListFlowable, Table
+
+    if isinstance(flowable, ListFlowable):
+        # ListFlowable.split expands every item, whereas Table._splitCell consumes
+        # exactly two fragments. Rows preserve bullets/numbering and let ReportLab
+        # split between items (or within a long item) into a proper continuation.
+        flowable = Table(
+            [[_pdf_table_cell(item)] for item in flowable.split(0, 0)],
+            colWidths=["100%"], hAlign="LEFT", splitByRow=1, splitInRow=1,
+            style=[(f"{side}PADDING", (0, 0), (-1, -1), 0)
+                   for side in ("LEFT", "RIGHT", "TOP", "BOTTOM")],
+        )
+
+    class CellFlowable(Flowable):
+        def __init__(self, child, before=None, after=None):
+            super().__init__()
+            self.child = child
+            self.before = child.getSpaceBefore() if before is None else before
+            self.after = child.getSpaceAfter() if after is None else after
+            self.hAlign = getattr(child, "hAlign", "LEFT")
+
+        def wrap(self, avail_width, avail_height):
+            self._canvas = self.canv
+            self._avail_width = avail_width
+            self.width, height = self.child.wrapOn(
+                self.canv, avail_width, max(0, avail_height - self.before - self.after)
+            )
+            self.height = height + self.before + self.after
+            return self.width, self.height
+
+        def split(self, avail_width, avail_height):
+            # Table._splitCell passes the full column width, including cell padding.
+            parts = self.child.splitOn(
+                self._canvas, min(avail_width, self._avail_width),
+                max(0, avail_height - self.before - self.after),
+            )
+            # The enclosing Table consumes exactly two fragments, never a story.
+            if len(parts) != 2:
+                return []
+            return [CellFlowable(part, self.before if i == 0 else 0,
+                                 self.after if i == len(parts) - 1 else 0)
+                    for i, part in enumerate(parts)]
+
+        def draw(self):
+            self.child.drawOn(self.canv, 0, self.after)
+
+    return CellFlowable(flowable)
+
+
 def markdown_pdf_flowables(
     md: str,
     body_style: Any,
     *,
     diagrams: Sequence[dict] | None = None,
     content_width: float = 6.9 * 72,
+    user_id: str | None = None,
+    db: DbSession | None = None,
+    in_table: bool = False,
 ) -> list:
     """Return a list of reportlab flowables rendering Markdown ``md``.
 
     ``diagrams`` optionally supplies pre-rendered images for ```mermaid``` fences, each
     ``{"code": str, "data": bytes, "width": float, "height": float}`` — the chat UI
     rasterizes the diagram it is already showing so the PDF matches the lane exactly.
+    Local generated images require ``user_id``; ``db`` optionally reuses the export's
+    session for ownership checks. Nested quotes retain this explicit context.
+    ``in_table`` returns measured, splittable cell content instead of frame-control
+    KeepTogether objects. Leave it false for normal single-column document stories.
     """
     from reportlab.lib import colors
     from reportlab.lib.styles import ParagraphStyle
@@ -1036,18 +1101,18 @@ def markdown_pdf_flowables(
                         continue
                 flow.append(code_flowable(text or " ", lang, c_style, chars))
             elif kind == "image":
-                data = resolve_image_bytes(block[2])
+                data = resolve_image_bytes(block[2], user_id=user_id, db=db)
                 card = _diagram_card(data, avail, 7.0 * 72) if data else None
                 if card is None:
                     flow.append(
                         Paragraph(_inline_pdf(f"[{block[1] or 'image'}]({block[2]})"), b_style)
                     )
                 elif block[1]:
-                    flow.append(
-                        KeepTogether(
-                            [card, Paragraph(escape(pdf_safe(block[1])), cap_style)]
-                        )
-                    )
+                    parts = [card, Paragraph(escape(pdf_safe(block[1])), cap_style)]
+                    if in_table:
+                        flow.extend(parts)
+                    else:
+                        flow.append(KeepTogether(parts))
                 else:
                     flow.append(card)
             elif kind == "quote":
@@ -1115,4 +1180,5 @@ def markdown_pdf_flowables(
                 flow.append(Spacer(1, 8))
         return flow
 
-    return render(parse_blocks(md))
+    flowables = render(parse_blocks(md))
+    return [_pdf_table_cell(item) for item in flowables] if in_table else flowables

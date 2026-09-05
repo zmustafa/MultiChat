@@ -497,13 +497,13 @@ export function PersonaLibraryPage() {
     <div className="flex h-full flex-col bg-gray-50 dark:bg-gray-950">
       <header className="flex items-center justify-between border-b border-gray-200 bg-white px-4 py-2 dark:border-gray-700 dark:bg-gray-900">
         <div className="flex items-center gap-3">
-          <Link to="/" className="text-sm text-blue-500">
+          <Link to="/" className="text-sm text-blue-700 dark:text-blue-300">
             ← Chat
           </Link>
           <h1 className="text-lg font-semibold">Persona Library</h1>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-500">{user?.email}</span>
+          <span className="hidden text-xs text-gray-500 sm:inline">{user?.email}</span>
           <ThemeToggle />
           <button
             onClick={logout}

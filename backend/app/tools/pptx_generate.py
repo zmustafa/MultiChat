@@ -235,7 +235,8 @@ class PptxGenerateTool:
             r2.font.color.rgb = theme.subtitle_text
 
     def _content_slide(
-        self, prs, theme: Theme, index: int, deck_title: str, item: dict
+        self, prs, theme: Theme, index: int, deck_title: str, item: dict,
+        *, user_id: str | None = None,
     ) -> None:
         slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
         # White canvas.
@@ -313,7 +314,8 @@ class PptxGenerateTool:
             )
         elif image_ref and chart_left is not None:
             self._add_image(
-                slide, image_ref, chart_left, chart_top, chart_w, chart_h
+                slide, image_ref, chart_left, chart_top, chart_w, chart_h,
+                user_id=user_id,
             )
 
         # Footer: deck title (left) + page number (right).
@@ -341,11 +343,13 @@ class PptxGenerateTool:
         if notes:
             slide.notes_slide.notes_text_frame.text = notes
 
-    def _add_image(self, slide, ref: str, left, top, width, height) -> bool:
+    def _add_image(
+        self, slide, ref: str, left, top, width, height, *, user_id: str | None = None,
+    ) -> bool:
         """Embed an image (data URI / http URL / /api/files link) into a slide,
         centered within the given box and preserving aspect ratio."""
         try:
-            data = resolve_image_bytes(ref)
+            data = resolve_image_bytes(ref, user_id=user_id)
             if not data:
                 return False
             from PIL import Image as _PILImage
@@ -471,7 +475,7 @@ class PptxGenerateTool:
                 if not isinstance(item, dict):
                     continue
                 n += 1
-                self._content_slide(prs, theme, n, title, item)
+                self._content_slide(prs, theme, n, title, item, user_id=ctx.user_id)
 
             file_id = uuid.uuid4().hex
             stored_name = f"{file_id}.pptx"

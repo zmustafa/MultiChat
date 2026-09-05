@@ -74,20 +74,33 @@ export function useDeliberation(runId: string | null) {
   const [live, setLive] = useState<DeliberationLive>(EMPTY);
   const [run, setRun] = useState<DeliberationRun | null>(null);
   const [loading, setLoading] = useState(false);
+  const [stateRunId, setStateRunId] = useState(runId);
   const controllerRef = useRef<AbortController | null>(null);
-  const startedRef = useRef<string | null>(null);
+  const activeRunRef = useRef<string | null>(null);
+  const generationRef = useRef(0);
+  const refreshIdRef = useRef(0);
 
   const refresh = useCallback(async () => {
-    if (!runId) return;
+    if (!runId || activeRunRef.current !== runId) return;
+    const generation = generationRef.current;
+    const requestId = ++refreshIdRef.current;
     try {
-      setRun(await getDeliberation(runId));
+      const persisted = await getDeliberation(runId);
+      if (
+        activeRunRef.current === runId &&
+        generationRef.current === generation &&
+        refreshIdRef.current === requestId
+      ) {
+        setRun(persisted);
+      }
     } catch {
       /* the run may have been deleted; the page handles a null run */
     }
   }, [runId]);
 
-  const handle = useCallback((event: string, data: any) => {
+  const handle = useCallback((event: string, data: any, isCurrent: () => boolean) => {
     setLive((prev) => {
+      if (!isCurrent()) return prev;
       const next = { ...prev, steps: { ...prev.steps } };
       switch (event) {
         case "delib_start":
@@ -187,44 +200,67 @@ export function useDeliberation(runId: string | null) {
 
   /** Open (or re-open) the stream. Safe to call on every mount. */
   const attach = useCallback(() => {
-    if (!runId) return;
+    if (!runId || activeRunRef.current !== runId) return;
+    generationRef.current += 1;
+    const generation = generationRef.current;
     controllerRef.current?.abort();
     setLive({ ...EMPTY, steps: {} });
     setLoading(true);
-    startedRef.current = runId;
-    controllerRef.current = streamSSE(
+    const isCurrent = () =>
+      activeRunRef.current === runId &&
+      generationRef.current === generation &&
+      !controller.signal.aborted;
+    const controller = streamSSE(
       `/api/deliberations/${runId}/stream`,
       {},
-      (evt) => handle(evt.event, evt.data),
+      (evt) => {
+        if (!isCurrent()) return;
+        handle(evt.event, evt.data, isCurrent);
+        // Pull canonical data when the panel finishes, even before the connection closes.
+        if (evt.event === "delib_done") void refresh();
+      },
       () => {
+        if (!isCurrent()) return;
         setLoading(false);
         void refresh();
       },
       (err) => {
+        if (!isCurrent()) return;
         setLoading(false);
-        setLive((p) => ({ ...p, error: err.message }));
+        setLive((p) => isCurrent() ? { ...p, error: err.message } : p);
         void refresh();
       },
     );
+    controllerRef.current = controller;
+    // Fetch after allocating the generation so attach cannot invalidate its own refresh.
+    void refresh();
   }, [runId, handle, refresh]);
 
   useEffect(() => {
-    if (!runId) return;
-    void refresh();
-    attach();
+    activeRunRef.current = runId;
+    setStateRunId(runId);
+    setRun(null);
+    setLive(EMPTY);
+    setLoading(false);
+    if (runId) attach();
     return () => {
+      activeRunRef.current = null;
+      generationRef.current += 1;
       controllerRef.current?.abort();
       controllerRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runId]);
+    // attach depends only on runId and stable callbacks, not on incoming live state.
+  }, [runId, attach]);
 
-  // Once the stream ends, pull the persisted record so the page shows canonical data.
-  useEffect(() => {
-    if (live.finished) void refresh();
-  }, [live.finished, refresh]);
-
-  return { live, run, loading, refresh, attach };
+  // Never expose a previous run during the render before the new identity's effect runs.
+  const isCurrentRun = stateRunId === runId;
+  return {
+    live: isCurrentRun ? live : EMPTY,
+    run: isCurrentRun ? run : null,
+    loading: isCurrentRun ? loading : false,
+    refresh,
+    attach,
+  };
 }
 
 /** Merge persisted steps with in-flight ones so a rejoined run renders completely. */

@@ -369,7 +369,7 @@ export const MarkdownTable = memo(function MarkdownTable({ children }: { childre
         )}
         {copyBtns}
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" tabIndex={0} aria-label="Scrollable table">
         <table className="w-full border-collapse text-xs">
           <thead>
             <tr className="bg-gray-100 dark:bg-gray-800/60">

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { apiFetch, mediaUrl } from "../api/client";
+import { apiFetch } from "../api/client";
 import type { GeneratedFile } from "../api/types";
+import { AuthenticatedDownloadLink } from "./AuthenticatedMedia";
 
 const ICONS: Record<string, string> = {
   pptx: "📊",
@@ -94,14 +95,14 @@ export function FilesPanel({
               className="flex items-center gap-2 rounded border border-gray-300 bg-white px-2 py-1 text-xs dark:border-gray-600 dark:bg-gray-800"
             >
               <span>{ICONS[f.kind] || "📎"}</span>
-              <a
-                href={mediaUrl(f.url)}
-                download
+              <AuthenticatedDownloadLink
+                href={f.url}
+                filename={f.download_name}
                 className="max-w-[180px] truncate text-brand hover:underline"
                 title={f.download_name}
               >
                 {f.download_name}
-              </a>
+              </AuthenticatedDownloadLink>
               <span className="text-gray-400">{fmtSize(f.size_bytes)}</span>
               <button
                 onClick={() => remove(f)}

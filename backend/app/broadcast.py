@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import threading
 import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator
@@ -131,11 +132,12 @@ async def _events_until_cancel(
     """
     it = stream.__aiter__()
     cancel_task: asyncio.Task = asyncio.ensure_future(cancel.wait())
+    next_task: asyncio.Task | None = None
     try:
         while True:
             if cancel.is_set():
                 return
-            next_task: asyncio.Task = asyncio.ensure_future(it.__anext__())
+            next_task = asyncio.ensure_future(it.__anext__())
             done, _pending = await asyncio.wait(
                 {next_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED
             )
@@ -145,20 +147,22 @@ async def _events_until_cancel(
                 except StopAsyncIteration:
                     return
             else:
-                # Cancel fired first — abort the in-flight read and close the stream.
-                next_task.cancel()
-                try:
-                    await next_task
-                except BaseException:  # noqa: BLE001
-                    pass
-                try:
-                    await it.aclose()
-                except BaseException:  # noqa: BLE001
-                    pass
                 return
     finally:
-        if not cancel_task.done():
-            cancel_task.cancel()
+        # This also runs on outer task cancellation and consumer aclose(), not just
+        # a Stop event. Join the read before closing: an async generator cannot be
+        # closed while its __anext__ is still running.
+        tasks = [cancel_task] + ([next_task] if next_task is not None else [])
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        close = getattr(it, "aclose", None)
+        if close is not None:
+            try:
+                await close()
+            except Exception:  # noqa: BLE001 - cleanup must not mask a stream failure
+                pass
 
 
 # Base64-encoded image attachments, shared across every lane and turn of a broadcast.
@@ -166,8 +170,9 @@ async def _events_until_cancel(
 # of blocking file I/O on the streaming path. Bounded by total bytes, not entry count,
 # because one attachment can be several MB.
 _IMAGE_CACHE_MAX_BYTES = 48 * 1024 * 1024
-_image_cache: OrderedDict[tuple[str, int, int], dict] = OrderedDict()
+_image_cache: OrderedDict[tuple[str, int, int, str], tuple[dict, int]] = OrderedDict()
 _image_cache_bytes = 0
+_image_cache_lock = threading.Lock()
 
 
 def _image_part(db: DbSession, att: Attachment) -> dict | None:
@@ -175,16 +180,17 @@ def _image_part(db: DbSession, att: Attachment) -> dict | None:
     global _image_cache_bytes
     if att.kind != "image":
         return None
-    path = os.path.join(settings.UPLOAD_DIR, att.storage_path)
+    path = os.path.normcase(os.path.realpath(os.path.join(settings.UPLOAD_DIR, att.storage_path)))
     try:
         stat = os.stat(path)
     except OSError:
         return None
-    key = (att.storage_path, int(stat.st_mtime), stat.st_size)
-    cached = _image_cache.get(key)
-    if cached is not None:
-        _image_cache.move_to_end(key)
-        return cached
+    key = (path, stat.st_mtime_ns, stat.st_size, att.mime_type)
+    with _image_cache_lock:
+        cached = _image_cache.get(key)
+        if cached is not None:
+            _image_cache.move_to_end(key)
+            return cached[0]
     try:
         with open(path, "rb") as fh:
             data = fh.read()
@@ -195,11 +201,20 @@ def _image_part(db: DbSession, att: Attachment) -> dict | None:
         "type": "image_url",
         "image_url": {"url": f"data:{att.mime_type};base64,{b64}"},
     }
-    _image_cache[key] = part
-    _image_cache_bytes += len(b64)
-    while _image_cache_bytes > _IMAGE_CACHE_MAX_BYTES and len(_image_cache) > 1:
-        _, evicted = _image_cache.popitem(last=False)
-        _image_cache_bytes -= len(evicted["image_url"]["url"])
+    size = len(part["image_url"]["url"].encode("utf-8"))
+    with _image_cache_lock:
+        # Another lane may have encoded the same image while this one read the file.
+        cached = _image_cache.get(key)
+        if cached is not None:
+            _image_cache.move_to_end(key)
+            return cached[0]
+        if size > _IMAGE_CACHE_MAX_BYTES:
+            return part  # still send the image, but never retain an oversized entry
+        _image_cache[key] = (part, size)
+        _image_cache_bytes += size
+        while _image_cache_bytes > _IMAGE_CACHE_MAX_BYTES:
+            _, (_, evicted_size) = _image_cache.popitem(last=False)
+            _image_cache_bytes -= evicted_size
     return part
 
 
@@ -862,6 +877,13 @@ async def multiplex(
 
     tasks = [asyncio.create_task(_wrap(lid, msg)) for lid, msg in lanes]
 
+    def _cleanup_hub() -> asyncio.Task[None]:
+        if _hubs.get((session_id, turn_id)) is hub:
+            _hubs.pop((session_id, turn_id), None)
+        # File cleanup shares the mirror writer lock; never wait for it on the loop.
+        # The worker checks generation ownership again after acquiring that lock.
+        return asyncio.create_task(asyncio.to_thread(_delete_run_file, hub))
+
     async def _sentinel() -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
         # Publish the terminal event through the hub so both the live client and any
@@ -870,12 +892,8 @@ async def multiplex(
         # subscribers.
         await hub.put(sse("done", {"turn_id": turn_id}))
 
-        def _cleanup_hub() -> None:
-            _hubs.pop((session_id, turn_id), None)
-            _delete_run_file(session_id, turn_id)
-
         asyncio.get_event_loop().call_later(HUB_TTL_SECONDS, _cleanup_hub)
-        hub.finish()
+        await hub.finish()
 
     watcher = asyncio.create_task(_sentinel())
     q = hub.subscribe()
@@ -899,7 +917,9 @@ async def multiplex(
             # and scheduled TTL cleanup. A returning client can still resume the buffered
             # tail until the TTL elapses. Nothing to tear down here.
             pass
-        elif len(_detached_tasks) < MAX_DETACHED_TASKS:
+        elif len(_detached_tasks) + len(running) + 1 <= MAX_DETACHED_TASKS:
+            # Admission and registration have no await: event-loop execution already
+            # makes them atomic. Reserve capacity for the incoming lanes AND watcher.
             for t in running:
                 _detached_tasks.add(t)
                 t.add_done_callback(_detached_tasks.discard)
@@ -916,6 +936,6 @@ async def multiplex(
             for t in running:
                 t.cancel()
             watcher.cancel()
-            hub.finish()
-            _hubs.pop((session_id, turn_id), None)
-            _delete_run_file(session_id, turn_id)
+            await asyncio.gather(*tasks, watcher, return_exceptions=True)
+            await hub.finish()
+            await _cleanup_hub()

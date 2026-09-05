@@ -654,7 +654,7 @@ export function SessionSidebar({
             </span>
             {/* Lane/message counts moved into the row tooltip so each chat is ONE line;
                 only a 2–3 character age stays visible, and it yields to the hover actions. */}
-            <span className="shrink-0 text-[10px] tabular-nums text-gray-400 group-hover:hidden">
+            <span className={`shrink-0 text-[10px] tabular-nums group-hover:hidden ${isActive ? "text-gray-600 dark:text-gray-300" : "text-gray-400"}`}>
               {shortAge(s.updated_at)}
             </span>
           </button>

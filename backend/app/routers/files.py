@@ -63,15 +63,22 @@ def _generated_path(filename: str) -> str | None:
 def get_generated_file(
     filename: str,
     name: str | None = Query(default=None),
+    user: User = Depends(current_user),
+    db: DbSession = Depends(get_db),
 ) -> FileResponse:
     """Serve a generated downloadable file (e.g. a .pptx deck) as an attachment.
 
-    Served without an auth header so plain browser download links work (browsers can't
-    attach a Bearer token). File names are unguessable UUID hex + a fixed extension, and
-    are validated to prevent path traversal.
+    The caller must own the corresponding database row; an unguessable file name is not
+    treated as authorization because links can be copied, logged, or shared accidentally.
     """
     path = _generated_path(filename)
-    if path is None:
+    row = db.scalar(
+        select(GeneratedFile).where(
+            GeneratedFile.stored_name == filename,
+            GeneratedFile.user_id == user.id,
+        )
+    )
+    if path is None or row is None:
         raise HTTPException(status_code=404, detail="File not found")
     ext = filename.rsplit(".", 1)[1]
     download_name = _safe_download_name(name, filename)
@@ -80,6 +87,7 @@ def get_generated_file(
         media_type=_MIME_BY_EXT.get(ext, "application/octet-stream"),
         filename=download_name,
         content_disposition_type="attachment",
+        headers={"Cache-Control": "private, no-store"},
     )
 
 

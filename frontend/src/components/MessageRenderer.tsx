@@ -5,7 +5,8 @@ import rehypeHighlight from "rehype-highlight";
 import { Mermaid } from "./Mermaid";
 import { MarkdownTable } from "./MarkdownTable";
 import { delimitedToMarkdown } from "../utils/contentMeta";
-import { mediaUrl } from "../api/client";
+import { downloadMedia, mediaUrl } from "../api/client";
+import { AuthenticatedImage } from "./AuthenticatedMedia";
 
 /**
  * Lets a lane-level "collapse/expand all code" control drive every CodeBlock beneath it.
@@ -131,6 +132,20 @@ function CodeBlock({
 const REMARK_PLUGINS = [remarkGfm];
 const REHYPE_PLUGINS = [rehypeHighlight];
 const MARKDOWN_COMPONENTS = {
+  img({ src, alt, ...props }: any) {
+    const raw = src || "";
+    if (raw.startsWith("/api/")) {
+      return <AuthenticatedImage src={raw} alt={alt || ""} {...props} />;
+    }
+    return <img src={mediaUrl(raw)} alt={alt || ""} {...props} />;
+  },
+  pre({ children, ...props }: any) {
+    return (
+      <pre tabIndex={0} aria-label="Scrollable code block" {...props}>
+        {children}
+      </pre>
+    );
+  },
   table({ children }: { children?: React.ReactNode }) {
     return <MarkdownTable>{children}</MarkdownTable>;
   },
@@ -141,11 +156,18 @@ const MARKDOWN_COMPONENTS = {
     const isApiFile = raw.startsWith("/api/files/");
     return (
       <a
-        href={resolved}
+        {...props}
+        href={isApiFile ? "#" : resolved}
         target="_blank"
         rel="noopener noreferrer"
-        {...(isApiFile ? { download: true } : {})}
-        {...props}
+        onClick={
+          isApiFile
+            ? (event) => {
+                event.preventDefault();
+                void downloadMedia(raw);
+              }
+            : undefined
+        }
       >
         {children}
       </a>

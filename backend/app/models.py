@@ -92,10 +92,10 @@ class Session(Base):
 
     user: Mapped[User] = relationship(back_populates="sessions")
     lanes: Mapped[list[Lane]] = relationship(
-        back_populates="session", cascade="all, delete-orphan"
+        back_populates="session", cascade="all, delete-orphan", passive_deletes=True
     )
     turns: Mapped[list[Turn]] = relationship(
-        back_populates="session", cascade="all, delete-orphan"
+        back_populates="session", cascade="all, delete-orphan", passive_deletes=True
     )
 
 

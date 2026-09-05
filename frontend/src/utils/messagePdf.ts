@@ -1,4 +1,4 @@
-import { apiFetch, mediaUrl } from "../api/client";
+import { apiFetch, downloadMedia } from "../api/client";
 import { svgToPngDataUrl } from "../components/Mermaid";
 
 export interface ExportDiagram {
@@ -53,10 +53,5 @@ export async function downloadMessagePdf(
     `/api/sessions/${sessionId}/messages/${messageId}/export`,
     { method: "POST", body: JSON.stringify({ diagrams }) },
   );
-  const a = document.createElement("a");
-  a.href = mediaUrl(res.url);
-  a.download = res.download_name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  await downloadMedia(res.url, res.download_name);
 }

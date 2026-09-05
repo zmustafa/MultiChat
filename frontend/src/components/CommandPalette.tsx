@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import type { Persona, SessionListItem } from "../api/types";
+import { useModalFocus } from "../hooks/useModalFocus";
 
 export interface Command {
   id: string;
@@ -37,13 +38,14 @@ export function CommandPalette({
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
+  useModalFocus(panelRef, open, onClose);
 
   useEffect(() => {
     if (open) {
       setQ("");
       setSel(0);
-      setTimeout(() => inputRef.current?.focus(), 10);
     }
   }, [open]);
 
@@ -82,8 +84,13 @@ export function CommandPalette({
     <div
       className="fixed inset-0 z-50 flex items-start justify-center bg-black/30 pt-24"
       onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Command palette"
     >
       <div
+        ref={panelRef}
+        tabIndex={-1}
         className="w-[32rem] max-w-[90vw] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900"
         onClick={(e) => e.stopPropagation()}
       >
@@ -95,7 +102,11 @@ export function CommandPalette({
             if (e.key === "ArrowDown") { e.preventDefault(); setSel((s) => Math.min(s + 1, commands.length - 1)); }
             else if (e.key === "ArrowUp") { e.preventDefault(); setSel((s) => Math.max(s - 1, 0)); }
             else if (e.key === "Enter") { e.preventDefault(); commands[sel]?.run(); }
-            else if (e.key === "Escape") { onClose(); }
+            else if (e.key === "Escape") {
+              e.preventDefault();
+              e.stopPropagation();
+              onClose();
+            }
           }}
           placeholder="Type a command or search chats…"
           className="w-full border-b border-gray-200 bg-transparent px-4 py-3 text-sm outline-none dark:border-gray-700"

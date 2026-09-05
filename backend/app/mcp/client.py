@@ -164,12 +164,21 @@ class McpStdioClient:
         fut: asyncio.Future = self._loop.create_future()
         self._pending[req_id] = fut
         msg = {"jsonrpc": "2.0", "id": req_id, "method": method, "params": params}
-        await asyncio.get_event_loop().run_in_executor(None, self._write, msg)
         try:
+            await asyncio.get_event_loop().run_in_executor(None, self._write, msg)
             return await asyncio.wait_for(fut, timeout=timeout)
         except TimeoutError as exc:
-            self._pending.pop(req_id, None)
             raise McpError(f"MCP '{method}' timed out. {self.stderr_tail(5)}") from exc
+        finally:
+            # Write failures and cancellation (including during the executor write)
+            # must release ownership too. A late reply simply finds no pending id.
+            self._pending.pop(req_id, None)
+            if not fut.done():
+                fut.cancel()
+            elif not fut.cancelled():
+                # stop()/a server error can resolve the future during the write. If
+                # that write fails or is cancelled, nobody reached wait_for to observe it.
+                fut.exception()
 
     async def _notify(self, method: str, params: dict) -> None:
         if not self._proc or not self._proc.stdin:

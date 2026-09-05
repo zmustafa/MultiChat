@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { API_BASE, apiFetch, getToken, mediaUrl } from "../api/client";
+import { API_BASE, apiFetch, downloadMedia, getToken } from "../api/client";
 import type { LaneRole, Persona } from "../api/types";
 import { CommandPalette } from "../components/CommandPalette";
 import { CompareGrid } from "../components/CompareGrid";
@@ -41,6 +41,7 @@ import { useAuth } from "../auth/AuthContext";
 import { useBroadcast } from "../hooks/useBroadcast";
 import type { LiveLane } from "../hooks/useBroadcast";
 import { useDismiss } from "../hooks/useDismiss";
+import { useModalFocus } from "../hooks/useModalFocus";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { usePersonas, usePersonaMutations } from "../hooks/usePersonas";
 import { useProviders } from "../hooks/useProviders";
@@ -181,6 +182,12 @@ export function ComparePage() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   const [mobileAddLaneOpen, setMobileAddLaneOpen] = useState(false);
+  const mobileNavPanelRef = useRef<HTMLDivElement>(null);
+  const mobileActionsPanelRef = useRef<HTMLDivElement>(null);
+  const mobileAddLanePanelRef = useRef<HTMLDivElement>(null);
+  useModalFocus(mobileNavPanelRef, mobileNavOpen, () => setMobileNavOpen(false));
+  useModalFocus(mobileActionsPanelRef, mobileActionsOpen, () => setMobileActionsOpen(false));
+  useModalFocus(mobileAddLanePanelRef, mobileAddLaneOpen, () => setMobileAddLaneOpen(false));
   useEffect(() => {
     if (!isMobile) {
       setMobileNavOpen(false);
@@ -969,21 +976,25 @@ export function ComparePage() {
       });
   }
 
-  function exportSession(format: "md" | "json") {
+  async function exportSession(format: "md" | "json") {
     if (!activeId) return;
-    const token = getToken();
-    fetch(`${API_BASE}/api/sessions/${activeId}/export?format=${format}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((r) => r.blob())
-      .then((blob) => {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `${session?.title || "session"}.${format}`;
-        a.click();
-        URL.revokeObjectURL(url);
-      });
+    try {
+      const token = getToken();
+      const response = await fetch(
+        `${API_BASE}/api/sessions/${activeId}/export?format=${format}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (!response.ok) throw new Error(`Export failed: HTTP ${response.status}`);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${session?.title || "session"}.${format}`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert((err as Error).message || "Export failed.");
+    }
   }
 
   async function exportComparison(fmt: "md" | "docx" | "pdf") {
@@ -1001,10 +1012,7 @@ export function ComparePage() {
         `/api/sessions/${activeId}/export?fmt=${fmt}`,
         { method: "POST", body: JSON.stringify({ diagrams }) },
       );
-      const a = document.createElement("a");
-      a.href = mediaUrl(res.url);
-      a.download = res.download_name;
-      a.click();
+      await downloadMedia(res.url, res.download_name);
       setShowFiles(true);
     } catch (e) {
       alert((e as Error).message);
@@ -1139,7 +1147,7 @@ export function ComparePage() {
           onClick={() => setMobileNavOpen(false)}
           className="absolute inset-0 bg-black/45"
         />
-        <div className="relative h-full max-w-[85vw] shadow-2xl">{fullSidebar}</div>
+        <div ref={mobileNavPanelRef} tabIndex={-1} className="relative h-full max-w-[85vw] shadow-2xl">{fullSidebar}</div>
       </div>
     ) : null
   ) : navCollapsed ? (
@@ -1226,6 +1234,20 @@ export function ComparePage() {
     />
   );
 
+  const mobileNavHeader = (title: string) => (
+    <header className="flex h-11 shrink-0 items-center gap-2 border-b border-gray-200 bg-white px-2 lg:hidden dark:border-gray-700 dark:bg-gray-900">
+      <button
+        type="button"
+        onClick={() => setMobileNavOpen(true)}
+        aria-label="Open conversations"
+        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xl text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+      >
+        ☰
+      </button>
+      <span className="min-w-0 flex-1 truncate text-sm font-semibold">{title}</span>
+    </header>
+  );
+
   // A deliberation opens in place of the lanes rather than on its own page, so the
   // sidebar stays put and picking one feels like switching to any other conversation.
   // "/d/new" is the compose screen: a deliberation needs its question before it exists.
@@ -1233,13 +1255,16 @@ export function ComparePage() {
     return (
       <div className="flex h-full bg-white dark:bg-gray-950">
         {sidebar}
-        <Suspense fallback={<PanelFallback />}>
-          {runId === "new" ? (
-            <DeliberationLaunch personaId={search.get("persona")} />
-          ) : (
-            <DeliberationView runId={runId} />
-          )}
-        </Suspense>
+        <div className="flex min-w-0 flex-1 flex-col">
+          {mobileNavHeader(runId === "new" ? "New deliberation" : "Deliberation")}
+          <Suspense fallback={<PanelFallback />}>
+            {runId === "new" ? (
+              <DeliberationLaunch personaId={search.get("persona")} />
+            ) : (
+              <DeliberationView runId={runId} />
+            )}
+          </Suspense>
+        </div>
         {palette}
       </div>
     );
@@ -1250,7 +1275,10 @@ export function ComparePage() {
     return (
       <div className="flex h-full bg-white dark:bg-gray-950">
         {sidebar}
-        <NewChatHome onStart={startFromHome} onSelectSession={setActiveId} />
+        <div className="flex min-w-0 flex-1 flex-col">
+          {mobileNavHeader("New chat")}
+          <NewChatHome onStart={startFromHome} onSelectSession={setActiveId} />
+        </div>
         {palette}
       </div>
     );
@@ -1301,7 +1329,7 @@ export function ComparePage() {
         {mobileAddLaneOpen && session && (
           <div className="fixed inset-0 z-50 flex items-end lg:hidden" role="dialog" aria-modal="true" aria-label="Add a lane">
             <button type="button" aria-label="Close add lane" onClick={() => setMobileAddLaneOpen(false)} className="absolute inset-0 bg-black/45" />
-            <div className="relative max-h-[85dvh] w-full overflow-y-auto rounded-t-2xl bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl dark:bg-gray-900">
+            <div ref={mobileAddLanePanelRef} tabIndex={-1} className="relative max-h-[85dvh] w-full overflow-y-auto rounded-t-2xl bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl dark:bg-gray-900">
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-base font-semibold">Add a model lane</h2>
                 <button type="button" onClick={() => setMobileAddLaneOpen(false)} aria-label="Close" className="inline-flex h-11 w-11 items-center justify-center rounded-lg text-xl">✕</button>
@@ -1325,7 +1353,7 @@ export function ComparePage() {
         {mobileActionsOpen && session && (
           <div className="fixed inset-0 z-50 flex items-end lg:hidden" role="dialog" aria-modal="true" aria-label="Conversation actions">
             <button type="button" aria-label="Close conversation actions" onClick={() => setMobileActionsOpen(false)} className="absolute inset-0 bg-black/45" />
-            <div className="relative max-h-[88dvh] w-full overflow-y-auto rounded-t-2xl bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl dark:bg-gray-900">
+            <div ref={mobileActionsPanelRef} tabIndex={-1} className="relative max-h-[88dvh] w-full overflow-y-auto rounded-t-2xl bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl dark:bg-gray-900">
               <div className="mb-2 flex items-center justify-between">
                 <h2 className="text-base font-semibold">Conversation actions</h2>
                 <button type="button" onClick={() => setMobileActionsOpen(false)} aria-label="Close" className="inline-flex h-11 w-11 items-center justify-center rounded-lg text-xl">✕</button>
@@ -1390,7 +1418,7 @@ export function ComparePage() {
           </div>
         )}
 
-        <header className="hidden flex-wrap items-center gap-2 border-b border-gray-200 bg-white px-3 py-2 lg:flex dark:border-gray-700 dark:bg-gray-900">
+        <header className="relative z-40 hidden flex-wrap items-center gap-2 border-b border-gray-200 bg-white px-3 py-2 lg:flex dark:border-gray-700 dark:bg-gray-900">
           <label className="sr-only" htmlFor="topic-title">
             Topic title
           </label>

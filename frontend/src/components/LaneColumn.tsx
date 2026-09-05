@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Lane, LaneMessage, Provider, Turn } from "../api/types";
-import { mediaUrl } from "../api/client";
 import type { LiveLane } from "../hooks/useBroadcast";
 import { addArtifact } from "../hooks/useArtifacts";
 import { useDismiss } from "../hooks/useDismiss";
@@ -10,6 +9,10 @@ import type { QueuedMessage } from "./LaneComposer";
 import { MessageRenderer, StreamingMessage, CodeFoldContext } from "./MessageRenderer";
 import { downloadMessagePdf } from "../utils/messagePdf";
 import { ToolCallCard } from "./ToolCallCard";
+import {
+  AuthenticatedDownloadLink,
+  AuthenticatedImageLink,
+} from "./AuthenticatedMedia";
 
 interface Props {
   lane: Lane;
@@ -404,11 +407,11 @@ function LaneModelEditor({
 
 /**
  * The blue "You" prompt that freezes (sticky) at the top of a lane's transcript while you
- * scroll through its answer. The prompt text is clamped to 2 lines ONLY while the header is
- * actually pinned to the top; in normal scroll position it shows the full prompt. A
- * zero-height sentinel just above the sticky header lets an IntersectionObserver detect the
- * pinned state: once the sentinel scrolls above the scroll viewport's top edge, the header
- * is stuck.
+ * scroll through its answer. Long prompts are clamped by default so the repeated prompt
+ * cards leave room for the models' responses; readers can expand one when needed. The clamp
+ * tightens from 3 lines to 2 while the header is pinned. A zero-height sentinel just above
+ * the sticky header lets an IntersectionObserver detect the pinned state: once the sentinel
+ * scrolls above the scroll viewport's top edge, the header is stuck.
  */
 function StickyYouHeader({
   turn,
@@ -429,8 +432,11 @@ function StickyYouHeader({
 }) {
   const sentinelRef = useRef<HTMLDivElement>(null);
   const mobileActionsRef = useRef<HTMLDivElement>(null);
+  const promptRef = useRef<HTMLDivElement>(null);
   const [stuck, setStuck] = useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+  const [promptExpanded, setPromptExpanded] = useState(false);
+  const [promptClipped, setPromptClipped] = useState(false);
   useDismiss(mobileActionsRef, mobileActionsOpen, () => setMobileActionsOpen(false));
   useEffect(() => {
     const root = scrollRef.current;
@@ -447,6 +453,19 @@ function StickyYouHeader({
     io.observe(sentinel);
     return () => io.disconnect();
   }, [scrollRef]);
+
+  // Measure the rendered text instead of guessing from character count: the same prompt
+  // wraps very differently with one lane than it does in a four-lane comparison.
+  useEffect(() => {
+    const el = promptRef.current;
+    if (!el || promptExpanded) return;
+    const measure = () => setPromptClipped(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [promptExpanded, stuck, turn.content]);
 
   return (
     <>
@@ -548,43 +567,49 @@ function StickyYouHeader({
           <div className="mt-1 hidden flex-wrap gap-1.5 lg:flex">
             {turn.attachments.map((a) =>
               a.kind === "document" ? (
-                <a
+                <AuthenticatedDownloadLink
                   key={a.id}
-                  href={mediaUrl(a.url)}
-                  target="_blank"
-                  rel="noreferrer"
+                  href={a.url}
+                  filename={a.filename}
                   title={a.filename}
                   className="flex items-center gap-1 rounded border border-gray-200 bg-gray-50 px-2 py-1 text-xs text-gray-600 hover:border-brand dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
                 >
                   <span>📄</span>
                   <span className="max-w-[140px] truncate">{a.filename}</span>
-                </a>
+                </AuthenticatedDownloadLink>
               ) : (
-                <a
+                <AuthenticatedImageLink
                   key={a.id}
-                  href={mediaUrl(a.url)}
-                  target="_blank"
-                  rel="noreferrer"
+                  src={a.url}
+                  alt={a.filename}
                   title={a.filename}
-                >
-                  <img
-                    src={mediaUrl(a.url)}
-                    alt={a.filename}
-                    className="h-16 w-16 rounded border border-gray-200 object-cover dark:border-gray-700"
-                  />
-                </a>
+                  imageClassName="h-16 w-16 rounded border border-gray-200 object-cover dark:border-gray-700"
+                />
               ),
             )}
           </div>
         )}
         {turn.content && (
-          <div
-            className={`mt-1 hidden whitespace-pre-wrap break-words text-sm text-gray-800 lg:block dark:text-gray-100 ${
-              stuck ? "line-clamp-2" : ""
-            }`}
-            title={stuck ? turn.content : undefined}
-          >
-            {turn.content}
+          <div className="mt-1 hidden lg:block">
+            <div
+              ref={promptRef}
+              className={`whitespace-pre-wrap break-words text-sm text-gray-800 dark:text-gray-100 ${
+                promptExpanded ? "" : stuck ? "line-clamp-2" : "line-clamp-3"
+              }`}
+              title={!promptExpanded && promptClipped ? turn.content : undefined}
+            >
+              {turn.content}
+            </div>
+            {(promptClipped || promptExpanded) && (
+              <button
+                type="button"
+                onClick={() => setPromptExpanded((open) => !open)}
+                aria-expanded={promptExpanded}
+                className="mt-0.5 text-[11px] font-medium text-blue-700 hover:underline dark:text-blue-300"
+              >
+                {promptExpanded ? "Show less ▴" : "Show more ▾"}
+              </button>
+            )}
           </div>
         )}
       </div>

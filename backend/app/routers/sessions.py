@@ -4,14 +4,20 @@ import base64
 import hashlib
 import json
 import os
+import unicodedata
+from datetime import UTC, datetime
+from typing import Literal
+from urllib.parse import quote
+from uuid import uuid4
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy import event, func, or_, select, update
 from sqlalchemy.orm import Session as DbSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import object_session, selectinload
 
-from ..broadcast import multiplex, request_stop
+from ..broadcast import active_lane_ids, multiplex, request_stop
 from ..config import settings
 from ..db import get_db
 from ..documents import document_prompt_block
@@ -20,6 +26,7 @@ from ..export import export_session as build_export_file
 from ..models import (
     Attachment,
     DeliberationRun,
+    Folder,
     GeneratedFile,
     Lane,
     LaneMessage,
@@ -60,6 +67,83 @@ router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 # ---------------- helpers ----------------
 
 
+@event.listens_for(ChatSession, "after_insert")
+def _remember_new_detail_session(_mapper, _connection, target) -> None:
+    db = object_session(target)
+    if db is not None:
+        db.info.setdefault("_new_detail_sessions", set()).add(target.id)
+
+
+@event.listens_for(DbSession, "after_transaction_end")
+def _clear_new_detail_sessions(db, transaction) -> None:
+    if transaction.parent is None:
+        db.info.pop("_new_detail_sessions", None)
+
+
+def _touch_detail_version(_mapper, connection, target) -> None:
+    """Invalidate detail in the SAME transaction as an ORM transcript write.
+
+    Broadcast/deliberation workers use separate DB sessions, and child rows have no
+    updated_at column. Persist a parent stamp rather than a process-local cache or a
+    read-time hash of message/tool bodies. Read the old FK too: moving an attachment
+    must invalidate both sessions, even if its previous turn wasn't loaded by the ORM.
+    Public transcript writers use ORM flushes; database cascades removing lanes are
+    additionally covered by the small lane snapshot in _detail_etag.
+    """
+    if isinstance(target, (Lane, Turn)):
+        table = type(target)
+        scope = or_(
+            ChatSession.id == target.session_id,
+            ChatSession.id.in_(select(table.session_id).where(table.id == target.id)),
+        )
+    else:
+        if isinstance(target, LaneMessage):
+            parent, foreign_key = Lane.id, LaneMessage.lane_id
+            owners = select(Lane.session_id)
+        elif isinstance(target, ToolCall):
+            parent, foreign_key = LaneMessage.id, ToolCall.lane_message_id
+            owners = select(Lane.session_id).join(LaneMessage, LaneMessage.lane_id == Lane.id)
+        else:  # Attachment
+            parent, foreign_key = Turn.id, Attachment.turn_id
+            owners = select(Turn.session_id)
+        old_parent = select(foreign_key).where(type(target).id == target.id)
+        owners = owners.where(or_(
+            parent == getattr(target, foreign_key.key), parent.in_(old_parent),
+        ))
+        scope = ChatSession.id.in_(owners)
+    db = object_session(target)
+    new_ids = db.info.get("_new_detail_sessions", set()) if db is not None else set()
+    if new_ids:
+        # Building a new graph (including timestamp-preserving system restores) must
+        # not overwrite its supplied history. The marker expires at commit/rollback;
+        # later edits in this same ORM session still invalidate normally.
+        scope = scope & ChatSession.id.not_in(new_ids)
+    connection.execute(
+        update(ChatSession).where(scope).values(updated_at=datetime.now(UTC))
+    )
+
+
+for _detail_model in (Lane, Turn, LaneMessage, ToolCall, Attachment):
+    # Before update/delete retains the previous parent reference; after insert also
+    # handles foreign keys populated by relationship assignment during the flush.
+    for _detail_event in ("after_insert", "before_update", "before_delete"):
+        event.listen(_detail_model, _detail_event, _touch_detail_version)
+
+
+class _SessionCreate(SessionCreate):
+    # Keep the request extension local to this router; no persistence schema change.
+    folder_id: str | None = None
+
+
+def _verify_folder(db: DbSession, user: User, folder_id: str | None) -> str | None:
+    if not folder_id:
+        return None
+    folder = db.get(Folder, folder_id)
+    if not folder or folder.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    return folder.id
+
+
 def _get_session(db: DbSession, user: User, session_id: str) -> ChatSession:
     s = db.get(ChatSession, session_id)
     if not s or s.user_id != user.id:
@@ -92,7 +176,7 @@ def _attachment_out(att: Attachment) -> AttachmentOut:
     )
 
 
-def _tool_call_out(tc: ToolCall) -> ToolCallOut:
+def _tool_call_out(tc: ToolCall, *, full_result: bool = False) -> ToolCallOut:
     """Serialize a tool call, shortening the result body for the session payload.
 
     Tool results can be tens of KB each and a busy session holds hundreds of them, but the
@@ -101,7 +185,7 @@ def _tool_call_out(tc: ToolCall) -> ToolCallOut:
     """
     result = tc.result_json
     truncated = False
-    if isinstance(result, dict):
+    if not full_result and isinstance(result, dict):
         body = result.get("result")
         if isinstance(body, str) and len(body) > settings.TOOL_RESULT_PREVIEW_CHARS:
             result = {
@@ -121,7 +205,9 @@ def _tool_call_out(tc: ToolCall) -> ToolCallOut:
     )
 
 
-def _serialize_detail(db: DbSession, s: ChatSession) -> SessionDetail:
+def _serialize_detail(
+    db: DbSession, s: ChatSession, *, full_tool_results: bool = False
+) -> SessionDetail:
     # Explicit eager loads: `s.lanes` / `s.turns` and each turn's attachments would
     # otherwise lazy-load, costing one query per turn on a long transcript.
     lanes = db.scalars(
@@ -179,7 +265,9 @@ def _serialize_detail(db: DbSession, s: ChatSession) -> SessionDetail:
                 cost_usd=m.cost_usd,
                 error=m.error,
                 created_at=m.created_at,
-                tool_calls=[_tool_call_out(tc) for tc in m.tool_calls],
+                tool_calls=[
+                    _tool_call_out(tc, full_result=full_tool_results) for tc in m.tool_calls
+                ],
             )
             for m in messages
         ],
@@ -366,10 +454,13 @@ def search_sessions(
 
 @router.post("", response_model=SessionDetail)
 def create_session(
-    payload: SessionCreate,
+    payload: _SessionCreate,
     user: User = Depends(current_user),
     db: DbSession = Depends(get_db),
 ) -> SessionDetail:
+    folder_id = _verify_folder(db, user, payload.folder_id)
+    for lane in payload.lanes:
+        _verify_provider(db, user, lane.provider_id)
     s = ChatSession(
         user_id=user.id,
         title=payload.title or "New topic",
@@ -377,11 +468,11 @@ def create_session(
         notice=payload.notice,
         tools_enabled=payload.tools_enabled,
         tool_config_json=payload.tool_config or {},
+        folder_id=folder_id,
     )
     db.add(s)
     db.flush()
     for i, lane in enumerate(payload.lanes):
-        _verify_provider(db, user, lane.provider_id)
         db.add(
             Lane(
                 session_id=s.id,
@@ -397,18 +488,27 @@ def create_session(
 
 
 def _detail_etag(db: DbSession, s: ChatSession) -> str:
-    """Cheap version stamp for a session's transcript.
+    """Small metadata/aggregate reads, never transcript or tool-result bodies.
 
-    The frequent refetches (one per lane completion, plus background polling) almost
-    always return an unchanged transcript, so a two-column aggregate lets them answer 304
-    instead of re-serialising hundreds of KB of markdown.
+    The persisted write stamp covers in-place edits. The lane snapshot also catches
+    provider-deletion FK cascades (which bypass ORM events), including empty lanes.
+    Turn/message aggregates cover structural changes without loading their content.
     """
     stamp = db.execute(
-        select(func.count(LaneMessage.id), func.max(LaneMessage.created_at))
+        select(
+            func.count(LaneMessage.id), func.max(LaneMessage.created_at),
+            select(func.count(Turn.id)).where(Turn.session_id == s.id).scalar_subquery(),
+            select(func.max(Turn.created_at)).where(Turn.session_id == s.id).scalar_subquery(),
+        )
         .join(Lane, Lane.id == LaneMessage.lane_id)
         .where(Lane.session_id == s.id)
     ).one()
-    raw = f"{s.id}:{s.updated_at}:{stamp[0]}:{stamp[1]}"
+    lanes = db.execute(
+        select(Lane.id, Lane.provider_id, Lane.model, Lane.position, Lane.role,
+               Lane.state, Lane.hidden, Lane.created_at)
+        .where(Lane.session_id == s.id).order_by(Lane.id)
+    ).all()
+    raw = f"{s.id}:{s.updated_at}:{tuple(stamp)!r}:{[tuple(lane) for lane in lanes]!r}"
     return '"' + hashlib.sha1(raw.encode()).hexdigest() + '"'
 
 
@@ -671,6 +771,8 @@ def update_session(
     db: DbSession = Depends(get_db),
 ) -> SessionDetail:
     s = _get_session(db, user, session_id)
+    # Validate ownership before changing ANY fields (including a simultaneous rename).
+    folder_id = _verify_folder(db, user, payload.folder_id)
     if payload.title is not None:
         s.title = payload.title
     if payload.system_prompt is not None:
@@ -682,7 +784,7 @@ def update_session(
     if payload.tool_config is not None:
         s.tool_config_json = payload.tool_config
     if payload.folder_id is not None:
-        s.folder_id = payload.folder_id or None
+        s.folder_id = folder_id
     if payload.pinned is not None:
         s.pinned = payload.pinned
     if payload.archived is not None:
@@ -844,6 +946,22 @@ def empty_trash(
             ChatSession.user_id == user.id, ChatSession.trashed.is_(True)
         )
     ).all()
+    row_ids = [s.id for s in rows]
+    active_deliberation = (
+        db.scalar(
+            select(DeliberationRun.id).where(
+                DeliberationRun.session_id.in_(row_ids),
+                DeliberationRun.status.in_(("pending", "running")),
+            )
+        )
+        if row_ids
+        else None
+    )
+    if active_deliberation or any(active_lane_ids(s.id) for s in rows):
+        raise HTTPException(
+            status_code=409,
+            detail="Stop active generations before emptying the trash",
+        )
     for s in rows:
         db.delete(s)
     db.commit()
@@ -856,9 +974,19 @@ def delete_session(
     db: DbSession = Depends(get_db),
 ):
     s = _get_session(db, user, session_id)
-    # A deliberation's run rows point at this session by id, not by foreign key, so they
-    # have to be removed here — otherwise a deleted panel keeps appearing in the
-    # deliberation list and opens a page with nothing behind it.
+    active_run = db.scalar(
+        select(DeliberationRun.id).where(
+            DeliberationRun.session_id == s.id,
+            DeliberationRun.status.in_(("pending", "running")),
+        )
+    )
+    if active_lane_ids(s.id) or active_run:
+        raise HTTPException(
+            status_code=409,
+            detail="Stop the active generation before permanently deleting this session",
+        )
+    # Remove run rows explicitly so ORM cascades clean up their steps consistently before
+    # the session row and its transcript disappear.
     for run in db.scalars(
         select(DeliberationRun).where(DeliberationRun.session_id == s.id)
     ).all():
@@ -1236,6 +1364,26 @@ def judge(
 # ---------------- export / import ----------------
 
 
+def _export_disposition(title: str, extension: str) -> str:
+    """RFC 6266/5987 filename: safe ASCII fallback plus percent-encoded UTF-8.
+
+    A title is display text, not a path or header value. Strip controls (including
+    bidi controls), replace path/Windows-special characters, and bound the name.
+    """
+    title = unicodedata.normalize("NFC", title)
+    stem = "".join(
+        "_" if c in '/\\:*?"<>|' or unicodedata.category(c).startswith("C") else c
+        for c in title
+    ).strip(" .")[:120]
+    stem = stem.encode("utf-8")[:180].decode("utf-8", errors="ignore").rstrip(" .") or "session"
+    fallback = unicodedata.normalize("NFKD", stem).encode("ascii", errors="ignore").decode()
+    # Compatibility normalization can turn full-width quotes/slashes into ASCII.
+    fallback = fallback.translate(str.maketrans({c: "_" for c in '/\\:*?"<>|'}))
+    fallback = fallback.strip(" .") or "session"
+    encoded = quote(f"{stem}.{extension}", safe="")
+    return f'attachment; filename="{fallback}.{extension}"; filename*=UTF-8\'\'{encoded}'
+
+
 @router.get("/{session_id}/export")
 def export_session(
     session_id: str,
@@ -1244,7 +1392,8 @@ def export_session(
     db: DbSession = Depends(get_db),
 ) -> StreamingResponse:
     s = _get_session(db, user, session_id)
-    detail = _serialize_detail(db, s)
+    # A download is an archive, not a UI preview: retain full tool result bodies.
+    detail = _serialize_detail(db, s, full_tool_results=True)
     if format == "md":
         lines = [f"# {s.title}\n"]
         if s.system_prompt:
@@ -1268,79 +1417,204 @@ def export_session(
             iter([body]),
             media_type="text/markdown",
             headers={
-                "Content-Disposition": f'attachment; filename="{s.title}.md"'
+                "Content-Disposition": _export_disposition(s.title, "md")
             },
         )
     body = detail.model_dump_json(indent=2)
     return StreamingResponse(
         iter([body]),
         media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="{s.title}.json"'},
+        headers={"Content-Disposition": _export_disposition(s.title, "json")},
     )
+
+
+class _ImportRecord(BaseModel):
+    # Do not coerce malformed containers, numbers, or booleans into transcript fields.
+    # Unknown export metadata is ignored for compatibility, never used as a DB FK.
+    model_config = ConfigDict(strict=True)
+    created_at: datetime | None = Field(default=None, strict=False)
+
+
+class _ImportLane(_ImportRecord):
+    id: str = Field(min_length=1)
+    provider_id: str = Field(min_length=1)
+    model: str
+    position: int | None = None
+    role: Literal["responder", "judge"] = "responder"
+    state: str = "idle"
+    hidden: bool = False
+
+
+class _ImportTurn(_ImportRecord):
+    id: str = Field(min_length=1)
+    order_index: int = 0
+    content: str = ""
+    target_lane_ids_json: list[str] | None = None
+    # Metadata only. Never attach existing files by untrusted imported ids or paths.
+    attachments: list[dict] = Field(default_factory=list)
+
+
+class _ImportToolCall(_ImportRecord):
+    tool_name: str
+    arguments_json: dict = Field(default_factory=dict)
+    result_json: dict | None = None
+    citations_json: list | None = None
+    status: str = "running"
+
+
+class _ImportMessage(_ImportRecord):
+    lane_id: str
+    turn_id: str
+    role: str = "assistant"
+    content: str = ""
+    order_index: int = 0
+    usage_json: dict | None = None
+    latency_ms: int | None = None
+    ttft_ms: int | None = None
+    cost_usd: float | None = Field(default=None, allow_inf_nan=False)
+    error: str | None = None
+    tool_calls: list[_ImportToolCall] = Field(default_factory=list)
+
+
+class _SessionImport(_ImportRecord):
+    title: str = "Imported topic"
+    system_prompt: str | None = None
+    notice: str | None = None
+    tools_enabled: bool = False
+    tool_config_json: dict = Field(default_factory=dict)
+    folder_id: str | None = None
+    pinned: bool = False
+    archived: bool = False
+    updated_at: datetime | None = Field(default=None, strict=False)
+    lanes: list[_ImportLane] = Field(default_factory=list)
+    turns: list[_ImportTurn] = Field(default_factory=list)
+    messages: list[_ImportMessage] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_json_encoding(cls, value):
+        # Arbitrary nested tool/config JSON may contain escaped lone surrogates or
+        # non-finite numbers. Reject before inserts AND before FastAPI could echo an
+        # unencodable value in its validation-error response.
+        try:
+            json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422, detail="Import must contain finite, UTF-8 JSON data"
+            ) from exc
+        return value
+
+    @model_validator(mode="after")
+    def validate_references(self):
+        lane_ids = {lane.id for lane in self.lanes}
+        turn_ids = {turn.id for turn in self.turns}
+        if len(lane_ids) != len(self.lanes) or len(turn_ids) != len(self.turns):
+            raise ValueError("Lane and turn ids must be unique within the import")
+        for message in self.messages:
+            if message.lane_id not in lane_ids or message.turn_id not in turn_ids:
+                raise ValueError("Messages must refer to lanes and turns in the import")
+        return self
+
+
+def _import_fields(record: _ImportRecord, **kwargs) -> dict:
+    data = record.model_dump(**kwargs)
+    if data.get("created_at") is None:
+        data.pop("created_at", None)
+    return data
 
 
 @router.post("/import", response_model=SessionDetail)
 def import_session(
-    payload: dict,
+    payload: _SessionImport,
     user: User = Depends(current_user),
     db: DbSession = Depends(get_db),
 ) -> SessionDetail:
+    # FastAPI validates the entire graph before this handler can perform any writes.
+    folder_id = _verify_folder(db, user, payload.folder_id)
+    provider_ids = {lane.provider_id for lane in payload.lanes}
+    owned_providers = set(db.scalars(
+        select(Provider.id).where(Provider.user_id == user.id, Provider.id.in_(provider_ids))
+    ).all()) if provider_ids else set()
     s = ChatSession(
         user_id=user.id,
-        title=payload.get("title", "Imported topic"),
-        system_prompt=payload.get("system_prompt"),
-        tools_enabled=payload.get("tools_enabled", False),
-        tool_config_json=payload.get("tool_config_json", {}),
+        title=payload.title,
+        system_prompt=payload.system_prompt,
+        notice=payload.notice,
+        tools_enabled=payload.tools_enabled,
+        tool_config_json=payload.tool_config_json,
+        folder_id=folder_id,
+        pinned=payload.pinned,
+        archived=payload.archived,
     )
-    db.add(s)
-    db.flush()
-
-    # recreate lanes (map old lane id -> new lane), verifying provider ownership
-    old_to_new: dict[str, str] = {}
-    for i, lane in enumerate(payload.get("lanes", [])):
-        provider = db.get(Provider, lane.get("provider_id"))
-        if not provider or provider.user_id != user.id:
-            continue
-        new_lane = Lane(
-            session_id=s.id,
-            provider_id=lane["provider_id"],
-            model=lane["model"],
-            position=lane.get("position", i),
-            role=lane.get("role", "responder"),
-        )
-        db.add(new_lane)
+    try:
+        db.add(s)
         db.flush()
-        old_to_new[lane["id"]] = new_lane.id
 
-    old_turn_to_new: dict[str, str] = {}
-    for turn in payload.get("turns", []):
-        new_turn = Turn(
-            session_id=s.id,
-            order_index=turn.get("order_index", 0),
-            content=turn.get("content", ""),
-            target_lane_ids_json=None,
-        )
-        db.add(new_turn)
-        db.flush()
-        old_turn_to_new[turn["id"]] = new_turn.id
-
-    for m in payload.get("messages", []):
-        lane_id = old_to_new.get(m.get("lane_id"))
-        turn_id = old_turn_to_new.get(m.get("turn_id"))
-        if not lane_id or not turn_id:
-            continue
-        db.add(
-            LaneMessage(
-                lane_id=lane_id,
-                turn_id=turn_id,
-                role=m.get("role", "assistant"),
-                content=m.get("content", ""),
-                order_index=m.get("order_index", 0),
-                usage_json=m.get("usage_json"),
-                latency_ms=m.get("latency_ms"),
-                cost_usd=m.get("cost_usd"),
+        # Missing/foreign providers intentionally skip their lanes and messages. Every
+        # surviving reference is mapped to a newly created row, never an external id.
+        old_to_new: dict[str, str] = {}
+        for i, lane in enumerate(payload.lanes):
+            if lane.provider_id not in owned_providers:
+                continue
+            new_lane = Lane(
+                session_id=s.id,
+                **_import_fields(lane, exclude={"id", "position"}),
+                position=lane.position if lane.position is not None else i,
             )
-        )
-    db.commit()
-    db.refresh(s)
-    return _serialize_detail(db, s)
+            db.add(new_lane)
+            db.flush()
+            old_to_new[lane.id] = new_lane.id
+
+        target_map = dict(old_to_new)
+        old_turn_to_new: dict[str, str] = {}
+        for turn in payload.turns:
+            targets = turn.target_lane_ids_json
+            if targets:
+                for target in targets:
+                    # Deleted lanes leave historical targets in legitimate exports.
+                    # Remap missing/skipped targets to inert, fresh IDs rather than
+                    # []/None, which history reconstruction treats as "all lanes".
+                    if target not in target_map:
+                        target_map[target] = str(uuid4())
+            new_turn = Turn(
+                session_id=s.id,
+                **_import_fields(turn, exclude={"id", "attachments", "target_lane_ids_json"}),
+                target_lane_ids_json=(
+                    [target_map[x] for x in targets]
+                    if targets is not None else None
+                ),
+            )
+            db.add(new_turn)
+            db.flush()
+            old_turn_to_new[turn.id] = new_turn.id
+
+        for message in payload.messages:
+            lane_id = old_to_new.get(message.lane_id)
+            if lane_id is None:
+                continue
+            new_message = LaneMessage(
+                lane_id=lane_id,
+                turn_id=old_turn_to_new[message.turn_id],
+                **_import_fields(message, exclude={"lane_id", "turn_id", "tool_calls"}),
+            )
+            db.add(new_message)
+            db.flush()
+            for call in message.tool_calls:
+                db.add(ToolCall(lane_message_id=new_message.id, **_import_fields(call)))
+
+        # Flush the complete graph before restoring archive timestamps. New session
+        # graphs are excluded from child invalidation until this transaction ends.
+        db.flush()
+        db.refresh(s)
+        if payload.created_at is not None:
+            s.created_at = payload.created_at
+        if payload.updated_at is not None:
+            s.updated_at = payload.updated_at
+        db.flush()
+        db.refresh(s)
+        detail = _serialize_detail(db, s)
+        db.commit()
+        return detail
+    except Exception:
+        db.rollback()
+        raise

@@ -143,7 +143,7 @@ class DocxGenerateTool:
 
                 image_ref = (sec.get("image") or "").strip()
                 if image_ref:
-                    data = resolve_image_bytes(image_ref)
+                    data = resolve_image_bytes(image_ref, user_id=ctx.user_id)
                     if data:
                         try:
                             doc.add_picture(io.BytesIO(data), width=Inches(5.5))

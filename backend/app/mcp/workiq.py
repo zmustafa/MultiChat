@@ -59,6 +59,13 @@ class WorkIqManager:
             try:
                 await client.start()
                 tools = await client.list_tools()
+            except asyncio.CancelledError:
+                # Not yet published as self._client: disconnect cannot find it.
+                try:
+                    await client.stop()
+                except Exception:  # noqa: BLE001 - preserve the original cancellation
+                    pass
+                raise
             except Exception as exc:  # noqa: BLE001
                 detail = str(exc) or type(exc).__name__
                 tail = client.stderr_tail(6)
@@ -85,6 +92,7 @@ class WorkIqManager:
             await self._stop_locked()
 
     async def _stop_locked(self) -> None:
+        self.enabled = False
         if self._client:
             try:
                 await self._client.stop()

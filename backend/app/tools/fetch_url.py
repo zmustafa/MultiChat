@@ -5,7 +5,7 @@ import re
 import httpx
 
 from .base import ToolContext, ToolDef, ToolResult
-from .ssrf import is_safe_url
+from .ssrf import MAX_REDIRECTS, PublicAsyncHTTPTransport, UnsafeURL
 
 MAX_BYTES = 2 * 1024 * 1024  # 2 MB
 
@@ -44,27 +44,38 @@ class FetchUrlTool:
     )
 
     async def run(self, args: dict, ctx: ToolContext) -> ToolResult:
-        url = (args.get("url") or "").strip()
-        ok, reason = is_safe_url(url)
-        if not ok:
-            return ToolResult(content=f"Refused to fetch URL: {reason}", citations=[])
+        value = args.get("url")
+        url = value.strip() if isinstance(value, str) else ""
+        target = url
         try:
-            async with httpx.AsyncClient(
-                timeout=20, follow_redirects=True, max_redirects=3
-            ) as client:
-                async with client.stream("GET", url) as resp:
-                    if resp.status_code >= 400:
-                        return ToolResult(
-                            content=f"Fetch failed: HTTP {resp.status_code}",
-                            citations=[],
-                        )
-                    chunks = bytearray()
-                    async for chunk in resp.aiter_bytes():
-                        chunks.extend(chunk)
-                        if len(chunks) >= MAX_BYTES:
-                            break
-                    raw = bytes(chunks).decode("utf-8", errors="ignore")
-        except Exception as exc:  # noqa: BLE001
+            async with httpx.AsyncClient(timeout=20, follow_redirects=False, trust_env=False,
+                                         transport=PublicAsyncHTTPTransport()) as client:
+                for redirects in range(MAX_REDIRECTS + 1):
+                    async with client.stream("GET", target) as resp:
+                        if resp.has_redirect_location:
+                            if redirects == MAX_REDIRECTS:
+                                return ToolResult(content="Fetch failed: too many redirects", citations=[])
+                            # Resolve against this hop's request, then validate before
+                            # issuing the next request (including same-host redirects).
+                            target = str(resp.url.join(resp.headers["location"]))
+                            continue
+                        if not resp.is_success:
+                            return ToolResult(
+                                content=f"Fetch failed: HTTP {resp.status_code}",
+                                citations=[],
+                            )
+                        chunks = bytearray()
+                        async for chunk in resp.aiter_bytes():
+                            # Never append an entire oversized transport/decoded chunk.
+                            remaining = MAX_BYTES - len(chunks)
+                            chunks.extend(chunk[:remaining])
+                            if len(chunks) >= MAX_BYTES:
+                                break
+                        raw = bytes(chunks).decode("utf-8", errors="ignore")
+                        break
+        except UnsafeURL as exc:
+            return ToolResult(content=f"Refused to fetch URL: {exc}", citations=[])
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
             return ToolResult(content=f"Fetch error: {exc}", citations=[])
         text = _sanitize(raw)[:8000]
         return ToolResult(

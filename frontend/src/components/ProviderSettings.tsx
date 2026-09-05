@@ -407,10 +407,11 @@ export function ToolsSection() {
         </p>
       </div>
       <div className="p-5">
-        <label className="mb-1 block text-xs font-medium text-gray-500">
+        <label htmlFor="tools-search-engine" className="mb-1 block text-xs font-medium text-gray-500">
           Search engine
         </label>
         <select
+          id="tools-search-engine"
           value={engine}
           onChange={(e) => changeEngine(e.target.value as "brave" | "duckduckgo")}
           className="mb-4 w-full rounded-lg border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-600 dark:bg-gray-800"
@@ -419,7 +420,7 @@ export function ToolsSection() {
           <option value="brave">Brave Search (API key)</option>
         </select>
 
-        <label className="mb-1 block text-xs font-medium text-gray-500">
+        <label htmlFor="tools-brave-key" className="mb-1 block text-xs font-medium text-gray-500">
           Brave Search API key
           {engine === "duckduckgo" && (
             <span className="ml-1 font-normal text-gray-400">
@@ -432,6 +433,7 @@ export function ToolsSection() {
         </div>
         <div className="mt-2 flex gap-2">
           <input
+            id="tools-brave-key"
             type="password"
             value={key}
             onChange={(e) => setKey(e.target.value)}
@@ -750,7 +752,7 @@ export function ProviderSettings() {
                           <span className="block truncate">{p.name}</span>
                           <span
                             className={`block truncate text-[11px] font-normal ${
-                              viewing ? "text-brand/70" : "text-gray-400"
+                              viewing ? "text-brand" : "text-gray-400"
                             }`}
                           >
                             {PROVIDER_META[p.provider_type]?.label || p.provider_type}
@@ -829,7 +831,7 @@ export function ProviderSettings() {
                           setSelected(null);
                         }
                       }}
-                      className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 dark:border-red-900 dark:hover:bg-red-950/40"
+                      className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/40"
                     >
                       Delete
                     </button>
@@ -889,10 +891,11 @@ export function ProviderSettings() {
 
                 {OAUTH_CAPABLE.includes(form.provider_type) && (
                   <div>
-                    <label className="mb-1 block text-xs font-medium text-gray-500">
+                    <label htmlFor="provider-auth-method" className="mb-1 block text-xs font-medium text-gray-500">
                       Authentication
                     </label>
                     <select
+                      id="provider-auth-method"
                       value={form.auth_method}
                       onChange={(e) =>
                         setForm({ ...form, auth_method: e.target.value as AuthMethod })
@@ -948,7 +951,7 @@ export function ProviderSettings() {
 
               <div>
                 <div className="mb-1 flex items-center justify-between">
-                  <label className="text-xs font-medium text-gray-500">
+                  <label htmlFor="provider-model-browser" className="text-xs font-medium text-gray-500">
                     Models{" "}
                     <span className="font-normal text-gray-400">
                       ({modelList.length})
@@ -969,6 +972,7 @@ export function ProviderSettings() {
                   <>
                     {/* Browse the retrieved models; picking one sets it as the default. */}
                     <select
+                      id="provider-model-browser"
                       value=""
                       onChange={(e) => {
                         if (e.target.value)
@@ -1034,10 +1038,11 @@ export function ProviderSettings() {
               </div>
 
               <div>
-                <label className="mb-1 block text-xs font-medium text-gray-500">
+                <label htmlFor="provider-default-model" className="mb-1 block text-xs font-medium text-gray-500">
                   Default model
                 </label>
                 <select
+                  id="provider-default-model"
                   value={form.default_model}
                   onChange={(e) => setForm({ ...form, default_model: e.target.value })}
                   className="w-full rounded-lg border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-600 dark:bg-gray-800"
