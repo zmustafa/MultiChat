@@ -17,6 +17,7 @@ import { useSessionMutations } from "../hooks/useSessions";
 import { seedLaneCollapse } from "../utils/laneCollapse";
 import { resolvePersonaLanes } from "../utils/personaLanes";
 import { ModelPicker } from "../components/ModelPicker";
+import { PersonaLaneCopy } from "../components/PersonaLaneCopy";
 import { ThemeToggle } from "../components/ThemeToggle";
 
 function providerName(providers: Provider[], id: string): string {
@@ -26,11 +27,15 @@ function providerName(providers: Provider[], id: string): string {
 
 function PersonaEditor({
   persona,
+  personas,
   providers,
+  providersReady,
   onClose,
 }: {
   persona: Persona | "new";
+  personas: Persona[];
   providers: Provider[];
+  providersReady: boolean;
   onClose: () => void;
 }) {
   const isNew = persona === "new";
@@ -46,6 +51,8 @@ function PersonaEditor({
 
   const { create, update } = usePersonaMutations();
   const enhance = usePersonaEnhance();
+  const saving = create.isPending || update.isPending;
+  const saveError = isNew ? create.error : update.error;
 
   async function runEnhance(mode: "enhance" | "generate") {
     setEnhanceNote(null);
@@ -81,20 +88,22 @@ function PersonaEditor({
 
   return (
     <div className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/40 p-4">
-      <div className="mt-8 w-full max-w-3xl rounded-xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900">
+      <div role="dialog" aria-modal="true" aria-label={isNew ? "New persona" : `Edit — ${p?.name}`} className="mt-8 w-full max-w-3xl rounded-xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900">
         <div className="flex items-center justify-between border-b border-gray-200 px-5 py-3 dark:border-gray-700">
           <h2 className="font-semibold">
             {isNew ? "New persona" : `Edit — ${p?.name}`}
           </h2>
           <button
             onClick={onClose}
+            disabled={saving}
+            aria-label="Close persona editor"
             className="rounded px-2 py-1 text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
           >
             ✕
           </button>
         </div>
 
-        <div className="space-y-4 p-5">
+        <fieldset disabled={saving} className="min-w-0 space-y-4 p-5">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label className="mb-1 block text-xs font-medium text-gray-500">Name</label>
@@ -161,6 +170,14 @@ function PersonaEditor({
             <label className="mb-1 block text-xs font-medium text-gray-500">
               Lanes ({lanes.length})
             </label>
+            <PersonaLaneCopy
+              personas={personas}
+              targetId={p?.id}
+              targetName={name}
+              providers={providers}
+              providersReady={providersReady}
+              onCopy={setLanes}
+            />
             <div className="mb-2 flex flex-wrap gap-1">
               {lanes.map((l, i) => (
                 <span
@@ -229,6 +246,7 @@ function PersonaEditor({
                   </button>
                   <button
                     onClick={() => setLanes((prev) => prev.filter((_, j) => j !== i))}
+                    aria-label={`Remove lane ${i + 1}: ${l.model}`}
                     className="text-gray-400 hover:text-red-500"
                   >
                     ×
@@ -366,20 +384,27 @@ function PersonaEditor({
               </div>
             )}
           </div>
-        </div>
+        </fieldset>
 
+        {saveError && (
+          <p role="alert" className="px-5 pb-3 text-sm text-red-600 dark:text-red-400">
+            Could not save persona: {saveError.message}. Your draft is still here; try again.
+          </p>
+        )}
         <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-5 py-3 dark:border-gray-700">
           <button
             onClick={onClose}
-            className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-600"
+            disabled={saving}
+            className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm disabled:opacity-40 dark:border-gray-600"
           >
             Cancel
           </button>
           <button
             onClick={save}
-            className="rounded-lg bg-brand px-4 py-1.5 text-sm font-medium text-white hover:brightness-110"
+            disabled={saving}
+            className="rounded-lg bg-brand px-4 py-1.5 text-sm font-medium text-white hover:brightness-110 disabled:opacity-40"
           >
-            Save persona
+            {saving ? "Saving…" : "Save persona"}
           </button>
         </div>
       </div>
@@ -391,7 +416,7 @@ export function PersonaLibraryPage() {
   const { logout, user } = useAuth();
   const nav = useNavigate();
   const { data: personas = [] } = usePersonas();
-  const { data: providers = [] } = useProviders();
+  const { data: providers = [], isSuccess: providersReady } = useProviders();
   const { create, remove, setDefault } = usePersonaMutations();
   const sm = useSessionMutations();
   const [query, setQuery] = useState("");
@@ -575,7 +600,9 @@ export function PersonaLibraryPage() {
       {editing && (
         <PersonaEditor
           persona={editing}
+          personas={personas}
           providers={providers}
+          providersReady={providersReady}
           onClose={() => setEditing(null)}
         />
       )}
