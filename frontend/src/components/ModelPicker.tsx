@@ -7,6 +7,14 @@ interface Props {
   allowJudge?: boolean;
 }
 
+function preferredModel(provider: Provider | undefined): string {
+  if (!provider) return "";
+  if (provider.default_model && provider.models.includes(provider.default_model)) {
+    return provider.default_model;
+  }
+  return provider.models[0] || provider.default_model || "";
+}
+
 export function ModelPicker({ providers, onAdd, allowJudge }: Props) {
   const [providerId, setProviderId] = useState(providers[0]?.id || "");
   const [model, setModel] = useState("");
@@ -23,13 +31,13 @@ export function ModelPicker({ providers, onAdd, allowJudge }: Props) {
     }
   }, [providers, providerId]);
 
-  // Default to the provider's first model (and keep it valid when the provider changes
-  // or providers finish loading).
+  // Prefer the provider's configured default (and keep the selection valid when the
+  // provider changes or providers finish loading).
   useEffect(() => {
     if (models.length && !models.includes(model)) {
-      setModel(models[0]);
+      setModel(preferredModel(provider));
     }
-  }, [providerId, models, model]);
+  }, [providerId, provider, models, model]);
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -38,7 +46,7 @@ export function ModelPicker({ providers, onAdd, allowJudge }: Props) {
         onChange={(e) => {
           const next = e.target.value;
           setProviderId(next);
-          setModel(providers.find((p) => p.id === next)?.models?.[0] || "");
+          setModel(preferredModel(providers.find((p) => p.id === next)));
         }}
         className="rounded border border-gray-300 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800"
       >
