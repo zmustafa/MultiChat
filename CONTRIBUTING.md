@@ -14,10 +14,18 @@ Please make sure the checks below pass locally.
 **Frontend** (`frontend/`):
 
 ```bash
-npm install
+npm ci
+npm run lint
 npm run typecheck   # tsc --noEmit
+npm test            # run the Vitest regression suite
 npm run build       # production build must succeed
+npm audit           # check production and development dependencies
 ```
+
+For dependency security fixes, update both `package.json` and `package-lock.json`
+when a direct dependency changes. Keep transitive fixes in the lockfile, validate
+with `npm ci` and the checks above, and let GitHub mark alerts fixed after the
+patched versions reach `main` rather than dismissing unresolved vulnerabilities.
 
 **Backend** (`backend/`):
 
