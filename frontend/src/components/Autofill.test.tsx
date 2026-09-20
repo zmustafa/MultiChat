@@ -103,7 +103,7 @@ function expectAssociatedLabel(markup: string, input: string) {
   const labels = markup.match(/<label\b[^>]*>[\s\S]*?<\/label>/g) ?? [];
   const linked = labels.filter((label) => attribute(label, "for") === id);
   expect(linked, `one label for input ${id}`).toHaveLength(1);
-  expect(linked[0].replace(/<[^>]*>/g, "").trim()).not.toBe("");
+  expect(linked[0]).toMatch(/>[^<>]*[^\s<>][^<>]*</);
 }
 
 function searchInput(): string {
@@ -111,6 +111,24 @@ function searchInput(): string {
   expect(rendered).toHaveLength(1);
   return rendered[0];
 }
+
+describe("label-content assertion", () => {
+  it.each(["Username", "<span>Username</span>", "\n Username \n", "&lt;Username&gt;"])(
+    "accepts label text: %s",
+    (content) => {
+      expectAssociatedLabel(`<label for="field">${content}</label>`, '<input id="field"/>');
+    },
+  );
+
+  it.each(["", " \t\n ", "<span></span>", '<span title="Username"> </span>'])(
+    "rejects labels without text: %s",
+    (content) => {
+      expect(() => expectAssociatedLabel(
+        `<label for="field">${content}</label>`, '<input id="field"/>',
+      )).toThrow();
+    },
+  );
+});
 
 describe("SessionSidebar search autofill markup", () => {
   it("identifies the field as chat search with an accessible name", () => {
