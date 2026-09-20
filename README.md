@@ -287,7 +287,9 @@ Then open **http://localhost:5000** and sign in with **admin / admin**.
 <details>
 <summary><b>Native dev (without Docker)</b></summary>
 
-Requires **Python 3.11+** and **Node 20+**.
+Requires **Python 3.11+** and a supported Node release: **22.22.2+ (22.x)**,
+**24.15.0+ (24.x, recommended and used in CI)**, or **26+**. Node 20 is not
+supported by the frontend test dependencies.
 
 **Backend**
 
