@@ -391,7 +391,7 @@ export function PromptField({
                 onSubmit();
               }
             }}
-            className="order-2 block min-w-0 flex-1 resize-none overflow-hidden bg-transparent text-sm leading-5 focus:outline-none lg:order-none lg:w-full"
+            className="order-2 block min-w-0 flex-1 resize-none overflow-hidden bg-transparent text-sm leading-5 focus:outline-none lg:order-none lg:w-full lg:flex-none"
           />
 
           <div className="order-1 flex shrink-0 items-center gap-2 lg:order-none lg:pt-1">
