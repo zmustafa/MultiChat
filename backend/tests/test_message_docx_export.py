@@ -75,6 +75,45 @@ def test_export_message_can_omit_prompt(owned, chat):
     assert "Render the images" in pdf_text
 
 
+def test_export_session_can_omit_prompts(owned, chat):
+    from pypdf import PdfReader
+
+    chat.message.content = "The **answer** is here."
+    owned.db.flush()
+
+    def read(stored: str, fmt: str) -> str:
+        path = owned.root / stored
+        if fmt == "md":
+            return path.read_text(encoding="utf-8")
+        if fmt == "docx":
+            return "\n".join(p.text for p in Document(str(path)).paragraphs)
+        return "\n".join(p.extract_text() for p in PdfReader(str(path)).pages)
+
+    for fmt in ("md", "docx", "pdf"):
+        stored, _, _ = export.export_session(owned.db, chat.session, fmt, include_prompt=False)
+        text = read(stored, fmt)
+        assert "Render the images" not in text, fmt
+        assert "Prompt" not in text, fmt
+        assert "Turn 1" in text and "answer" in text, fmt
+
+        stored, _, _ = export.export_session(owned.db, chat.session, fmt)
+        assert "Render the images" in read(stored, fmt), fmt
+
+
+def test_session_markdown_route_can_omit_prompts(client, auth, transcript):
+    url = f"/api/sessions/{transcript.id}/export?format=md"
+    first = sorted(transcript.turns, key=lambda t: t.order_index)[0].content
+
+    with_prompt = client.get(url, headers=auth)
+    assert with_prompt.status_code == 200 and "## Prompt" in with_prompt.text
+    assert first in with_prompt.text
+
+    without = client.get(f"{url}&include_prompt=false", headers=auth)
+    assert without.status_code == 200
+    assert "## Prompt" not in without.text and "## Turn 1" in without.text
+    assert first not in without.text
+
+
 def test_message_export_route_supports_docx_and_rejects_unknown_format(client, auth, db, transcript):
     lane = sorted(transcript.lanes, key=lambda x: x.position)[0]
     message_id = db.scalars(

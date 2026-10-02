@@ -236,3 +236,150 @@ def test_single_column_keeps_image_caption_together_at_page_boundary(owned):
     assert not list(reader.pages[0].images)
     assert_image(reader, owned.images["own"], "Boundary caption")
     assert "After the image" in text_of(reader)
+
+
+def add_lane(owned, chat, model, position, content, turn=None):
+    lane = models.Lane(session_id=chat.session.id, provider_id=chat.lane.provider_id,
+                       model=model, position=position)
+    owned.db.add(lane)
+    owned.db.flush()
+    owned.db.add(models.LaneMessage(lane_id=lane.id, turn_id=(turn or chat.turn).id,
+                                   content=content))
+    owned.db.flush()
+    return lane
+
+
+def add_turn(owned, chat, content, order_index):
+    turn = models.Turn(session_id=chat.session.id, content=content, order_index=order_index)
+    owned.db.add(turn)
+    owned.db.flush()
+    return turn
+
+
+def outline_of(reader):
+    """[(depth, title, 1-based page)] for every outline entry, in order."""
+    out = []
+
+    def walk(items, depth):
+        for item in items:
+            if isinstance(item, list):
+                walk(item, depth + 1)
+            else:
+                out.append((depth, item.title, reader.get_destination_page_number(item) + 1))
+
+    walk(reader.outline, 0)
+    return out
+
+
+def page_of(reader, needle):
+    pages = [i + 1 for i, page in enumerate(reader.pages)
+             if needle in " ".join(page.extract_text().split())]
+    assert pages, needle
+    return pages[0]
+
+
+def test_single_model_session_pdf_stays_continuous(owned, chat):
+    chat.message.content = "Only answer."
+    owned.db.flush()
+    stored, _, _ = export.export_session(owned.db, chat.session, "pdf")
+    reader = PdfReader(owned.root / stored)
+    assert len(reader.pages) == 1
+    assert outline_of(reader) == [(0, "offline (Offline)", 1)]
+    assert reader.trailer["/Root"]["/PageMode"] == "/UseOutlines"
+
+
+def test_multi_model_session_pdf_breaks_pages_and_lists_models(owned, chat):
+    chat.message.content = "First answer."
+    owned.db.flush()
+    add_lane(owned, chat, "second", 1, "Second answer.")
+    add_lane(owned, chat, "third", 2, "Third answer.")
+
+    stored, _, _ = export.export_session(owned.db, chat.session, "pdf")
+    reader = PdfReader(owned.root / stored)
+
+    assert len(reader.pages) == 3
+    assert [page_of(reader, f"{m} answer.") for m in ("First", "Second", "Third")] == [1, 2, 3]
+    # The prompt shares the first model's page instead of being left on its own.
+    assert page_of(reader, "Render the images") == 1
+    # One turn: the models are the top level of the outline, each opening its own page.
+    assert outline_of(reader) == [
+        (0, "offline (Offline)", 1),
+        (0, "second (Offline)", 2),
+        (0, "third (Offline)", 3),
+    ]
+
+
+@pytest.mark.parametrize("include_prompt", [True, False])
+def test_multi_turn_session_pdf_nests_models_under_turns(owned, chat, include_prompt):
+    chat.message.content = "First answer, turn one."
+    owned.db.flush()
+    second = add_lane(owned, chat, "second", 1, "Second answer, turn one.")
+    turn2 = add_turn(owned, chat, "A follow-up question about the images", 1)
+    owned.db.add(models.LaneMessage(lane_id=chat.lane.id, turn_id=turn2.id,
+                                   content="First answer, turn two."))
+    owned.db.add(models.LaneMessage(lane_id=second.id, turn_id=turn2.id,
+                                   content="Second answer, turn two."))
+    owned.db.flush()
+
+    stored, _, _ = export.export_session(owned.db, chat.session, "pdf",
+                                         include_prompt=include_prompt)
+    reader = PdfReader(owned.root / stored)
+
+    assert len(reader.pages) == 4
+    # A new turn starts a page with its heading, prompt and first answer together.
+    assert page_of(reader, "Turn 2") == page_of(reader, "First answer, turn two.") == 3
+    turn1 = "Turn 1 \u2014 Render the images" if include_prompt else "Turn 1"
+    turn2_label = (
+        "Turn 2 \u2014 A follow-up question about the images" if include_prompt else "Turn 2"
+    )
+    assert outline_of(reader) == [
+        (0, turn1, 1),
+        (1, "offline (Offline)", 1),
+        (1, "second (Offline)", 2),
+        (0, turn2_label, 3),
+        (1, "offline (Offline)", 3),
+        (1, "second (Offline)", 4),
+    ]
+
+
+def test_long_outline_turn_label_is_shortened(owned, chat):
+    chat.turn.content = "word " * 40
+    owned.db.flush()
+    add_turn(owned, chat, "Next", 1)
+    stored, _, _ = export.export_session(owned.db, chat.session, "pdf")
+    title = outline_of(PdfReader(owned.root / stored))[0][1]
+    assert title.startswith("Turn 1 \u2014 word word") and title.endswith("\u2026")
+    assert len(title) <= len("Turn 1 \u2014 ") + 61
+
+
+def test_session_docx_starts_each_model_on_a_new_page(owned, chat):
+    from docx import Document
+
+    chat.message.content = "First answer."
+    owned.db.flush()
+    second = add_lane(owned, chat, "second", 1, "Second answer.")
+    turn2 = add_turn(owned, chat, "Follow-up", 1)
+    owned.db.add(models.LaneMessage(lane_id=second.id, turn_id=turn2.id, content="Later."))
+    owned.db.flush()
+
+    stored, _, _ = export.export_session(owned.db, chat.session, "docx")
+    breaks = [
+        (p.text, bool(p.paragraph_format.page_break_before))
+        for p in Document(str(owned.root / stored)).paragraphs
+        if p.style.name.startswith("Heading")
+    ]
+    assert breaks == [
+        ("Turn 1", False),
+        ("offline (Offline)", False),
+        ("second (Offline)", True),
+        ("Turn 2", True),
+        ("second (Offline)", False),
+    ]
+
+
+def test_single_model_session_docx_has_no_page_breaks(owned, chat):
+    from docx import Document
+
+    stored, _, _ = export.export_session(owned.db, chat.session, "docx")
+    doc = Document(str(owned.root / stored))
+    assert not any(p.paragraph_format.page_break_before for p in doc.paragraphs)

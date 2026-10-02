@@ -1072,15 +1072,25 @@ def footer_canvas(
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self._pages: list[dict] = []
+            self._marks: list[tuple[str, dict]] = []
+
+        # A bookmark resolves to the page being written when it is registered. Pages are
+        # only written on save, so registering at layout time would point every bookmark
+        # at page 1; hold them with their page and register them during the replay.
+        def bookmarkPage(self, key, **kwargs):  # noqa: N802 — reportlab API
+            self._marks.append((key, kwargs))
 
         def showPage(self):  # noqa: N802 — reportlab API
             self._pages.append(dict(self.__dict__))
+            self._marks = []
             self._startPage()
 
         def save(self):
             total = len(self._pages)
             for state in self._pages:
                 self.__dict__.update(state)
+                for key, kwargs in self._marks:
+                    pdf_canvas.Canvas.bookmarkPage(self, key, **kwargs)
                 self._stamp(total)
                 super().showPage()
             super().save()
@@ -1113,6 +1123,31 @@ def footer_canvas(
             self.setFillColor(HexColor("#94A3B8"))
 
     return FooterCanvas
+
+
+def pdf_bookmark(key: str, title: str, level: int = 0):
+    """An invisible flowable that adds a PDF outline entry pointing at where it lands.
+
+    It keeps with the next flowable, so it travels to a new page with the heading it marks
+    instead of being stranded at the foot of the previous one.
+    """
+    from reportlab.platypus import Flowable
+
+    class _Bookmark(Flowable):
+        def __init__(self) -> None:
+            super().__init__()
+            self.keepWithNext = 1
+
+        def wrap(self, avail_width, avail_height):  # noqa: ARG002
+            return (0, 0)
+
+        def draw(self) -> None:
+            _x, top = self.canv.absolutePosition(0, 0)
+            self.canv.bookmarkPage(key, fit="XYZ", left=0, top=top + 18, zoom=0)
+            self.canv.addOutlineEntry(title, key, level=level, closed=False)
+            self.canv.showOutline()
+
+    return _Bookmark()
 
 
 def _inline_pdf(text: str) -> str:

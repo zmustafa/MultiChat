@@ -1149,7 +1149,8 @@ def export_comparison(
         # The UI hands over the mermaid diagrams it has already rendered; without them a
         # ```mermaid``` fence would land in the document as raw source.
         stored_name, download_name, mime = build_export_file(
-            db, s, fmt, _decode_diagrams(payload)
+            db, s, fmt, _decode_diagrams(payload),
+            include_prompt=payload.include_prompt if payload else True,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Export failed: {exc}")
@@ -1394,6 +1395,7 @@ def _export_disposition(title: str, extension: str) -> str:
 def export_session(
     session_id: str,
     format: str = "json",
+    include_prompt: bool = True,
     user: User = Depends(current_user),
     db: DbSession = Depends(get_db),
 ) -> StreamingResponse:
@@ -1405,8 +1407,11 @@ def export_session(
         if s.system_prompt:
             lines.append(f"**System prompt:** {s.system_prompt}\n")
         lane_by_id = {l.id: l for l in detail.lanes}
-        for turn in detail.turns:
-            lines.append(f"\n## Prompt\n{turn.content}\n")
+        for i, turn in enumerate(detail.turns, 1):
+            if include_prompt:
+                lines.append(f"\n## Prompt\n{turn.content}\n")
+            else:
+                lines.append(f"\n## Turn {i}\n")
             for m in detail.messages:
                 if m.turn_id != turn.id or m.role != "assistant":
                     continue

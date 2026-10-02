@@ -175,14 +175,42 @@ def _gather(db: DbSession, session: ChatSession):
     return lanes, turns, by_key, lane_label
 
 
-def _export_markdown(db, session, path, diagrams=None) -> None:
+def _answered(lanes, turns, by_key) -> list[tuple[Turn, list[tuple[Lane, LaneMessage]]]]:
+    """Each turn with the lanes that actually answered it, in lane order."""
+    out = []
+    for turn in turns:
+        answers = []
+        for lane in lanes:
+            msg = by_key.get((lane.id, turn.id))
+            if msg and msg.content:
+                answers.append((lane, msg))
+        out.append((turn, answers))
+    return out
+
+
+def _multi_model(answered) -> bool:
+    """True when two or more models answered somewhere in the chat."""
+    return len({lane.id for _turn, answers in answered for lane, _msg in answers}) > 1
+
+
+def _outline_turn_label(index: int, turn: Turn, include_prompt: bool) -> str:
+    topic = " ".join((turn.content or "").split()) if include_prompt else ""
+    if not topic:
+        return f"Turn {index}"
+    if len(topic) > 60:
+        topic = topic[:60].rsplit(" ", 1)[0].rstrip(",;:.\u2014-") + "\u2026"
+    return f"Turn {index} \u2014 {topic}"
+
+
+def _export_markdown(db, session, path, diagrams=None, include_prompt=True) -> None:
     lanes, turns, by_key, lane_label = _gather(db, session)
     out: list[str] = [f"# {_document_title(db, session)}", ""]
     for i, turn in enumerate(turns, 1):
         out.append(f"## Turn {i}")
         out.append("")
-        out.append(f"**Prompt:** {turn.content}")
-        out.append("")
+        if include_prompt:
+            out.append(f"**Prompt:** {turn.content}")
+            out.append("")
         for lane in lanes:
             msg = by_key.get((lane.id, turn.id))
             if not msg or not msg.content:
@@ -195,52 +223,65 @@ def _export_markdown(db, session, path, diagrams=None) -> None:
         fh.write("\n".join(out))
 
 
-def _export_docx(db, session, path, diagrams=None) -> None:
+def _export_docx(db, session, path, diagrams=None, include_prompt=True) -> None:
     from docx import Document
     from docx.shared import RGBColor
 
     from .markdown_render import docx_page_setup, render_markdown_docx
 
     lanes, turns, by_key, lane_label = _gather(db, session)
+    answered = _answered(lanes, turns, by_key)
+    # With several models, each answer starts a page so they're easy to tell apart.
+    paginate = _multi_model(answered)
     doc = Document()
     docx_page_setup(doc, _document_title(db, session))
     h = doc.add_heading(_document_title(db, session), level=0)
     h.runs[0].font.color.rgb = RGBColor(0x1E, 0x1B, 0x4B)
-    for i, turn in enumerate(turns, 1):
-        doc.add_heading(f"Turn {i}", level=1)
-        p = doc.add_paragraph()
-        run = p.add_run("Prompt: ")
-        run.bold = True
-        p.add_run(turn.content or "")
-        _add_turn_attachments_docx(doc, turn)
-        for lane in lanes:
-            msg = by_key.get((lane.id, turn.id))
-            if not msg or not msg.content:
-                continue
+    for i, (turn, answers) in enumerate(answered, 1):
+        turn_head = doc.add_heading(f"Turn {i}", level=1)
+        if paginate and i > 1:
+            turn_head.paragraph_format.page_break_before = True
+        if include_prompt:
+            p = doc.add_paragraph()
+            run = p.add_run("Prompt: ")
+            run.bold = True
+            p.add_run(turn.content or "")
+            _add_turn_attachments_docx(doc, turn)
+        for j, (lane, msg) in enumerate(answers):
             hh = doc.add_heading(lane_label(lane), level=2)
             hh.runs[0].font.color.rgb = RGBColor(0x4F, 0x46, 0xE5)
+            if paginate and j > 0:
+                hh.paragraph_format.page_break_before = True
             render_markdown_docx(doc, msg.content, base_level=3, diagrams=diagrams)
     doc.save(path)
 
 
-def _export_pdf(db, session, path, diagrams=None) -> None:
+def _export_pdf(db, session, path, diagrams=None, include_prompt=True) -> None:
     from reportlab.lib.colors import HexColor
     from reportlab.lib.pagesizes import LETTER
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import inch
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
 
-    from .markdown_render import markdown_pdf_flowables, pdf_fonts
+    from .markdown_render import markdown_pdf_flowables, pdf_bookmark, pdf_fonts
 
     lanes, turns, by_key, lane_label = _gather(db, session)
+    answered = _answered(lanes, turns, by_key)
+    # With several models, each answer starts a page so they're easy to tell apart.
+    paginate = _multi_model(answered)
+    # A single turn lists its models at the top of the outline; otherwise models nest
+    # under their turn.
+    nest = len(answered) > 1
     doc_title = _document_title(db, session)
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle("T", parent=styles["Title"], textColor=HexColor("#1E1B4B"))
     turn_style = ParagraphStyle(
-        "Turn", parent=styles["Heading1"], textColor=HexColor("#1E1B4B"), spaceBefore=12
+        "Turn", parent=styles["Heading1"], textColor=HexColor("#1E1B4B"), spaceBefore=12,
+        keepWithNext=1,
     )
     lane_style = ParagraphStyle(
-        "Lane", parent=styles["Heading3"], textColor=HexColor("#4F46E5"), spaceBefore=6
+        "Lane", parent=styles["Heading3"], textColor=HexColor("#4F46E5"), spaceBefore=6,
+        keepWithNext=1,
     )
     body = ParagraphStyle("Body", parent=styles["BodyText"], spaceAfter=5, leading=14)
     prompt_style = ParagraphStyle(
@@ -257,15 +298,23 @@ def _export_pdf(db, session, path, diagrams=None) -> None:
     )
     content_width = doc.width
     story: list = [Paragraph(escape(doc_title), title_style), Spacer(1, 8)]
-    for i, turn in enumerate(turns, 1):
+    for i, (turn, answers) in enumerate(answered, 1):
+        if paginate and i > 1:
+            story.append(PageBreak())
+        if nest:
+            story.append(
+                pdf_bookmark(f"turn-{i}", _outline_turn_label(i, turn, include_prompt), 0)
+            )
         story.append(Paragraph(f"Turn {i}", turn_style))
-        story.append(Paragraph("<b>Prompt:</b> " + escape(turn.content or ""), prompt_style))
-        story.extend(_turn_attachment_flowables(turn, content_width, caption_style))
-        for lane in lanes:
-            msg = by_key.get((lane.id, turn.id))
-            if not msg or not msg.content:
-                continue
-            story.append(Paragraph(escape(lane_label(lane)), lane_style))
+        if include_prompt:
+            story.append(Paragraph("<b>Prompt:</b> " + escape(turn.content or ""), prompt_style))
+            story.extend(_turn_attachment_flowables(turn, content_width, caption_style))
+        for j, (lane, msg) in enumerate(answers):
+            if paginate and j > 0:
+                story.append(PageBreak())
+            label = lane_label(lane)
+            story.append(pdf_bookmark(f"turn-{i}-lane-{lane.id}", label, 1 if nest else 0))
+            story.append(Paragraph(escape(label), lane_style))
             story.extend(
                 markdown_pdf_flowables(
                     msg.content, body, diagrams=diagrams, content_width=content_width,
@@ -281,11 +330,14 @@ def _export_pdf(db, session, path, diagrams=None) -> None:
 _BUILDERS = {"md": _export_markdown, "docx": _export_docx, "pdf": _export_pdf}
 
 
-def export_session(db: DbSession, session: ChatSession, fmt: str, diagrams=None):
+def export_session(
+    db: DbSession, session: ChatSession, fmt: str, diagrams=None, include_prompt: bool = True
+):
     """Export a whole session (all lanes side-by-side) to md/docx/pdf.
 
     ``diagrams`` carries mermaid diagrams the chat UI already rasterized, so the document
-    shows the diagrams rather than their source.
+    shows the diagrams rather than their source. ``include_prompt=False`` leaves out each
+    turn's prompt and its attachments.
 
     Returns (stored_name, download_name, mime_type).
     """
@@ -295,7 +347,7 @@ def export_session(db: DbSession, session: ChatSession, fmt: str, diagrams=None)
         raise ValueError(f"Unsupported export format: {fmt}")
     stored_name = new_stored_name(fmt)
     path = os.path.join(generated_dir(), stored_name)
-    builder(db, session, path, diagrams)
+    builder(db, session, path, diagrams, include_prompt)
     download_name = safe_download_name(
         _document_title(db, session), fmt, fallback="comparison"
     )

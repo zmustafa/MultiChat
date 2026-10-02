@@ -49,7 +49,7 @@ import { useTheme } from "../hooks/useTheme";
 import { useTools } from "../hooks/useTools";
 import { seedLaneCollapse } from "../utils/laneCollapse";
 import { forgetLast, rememberLast } from "../utils/lastLocation";
-import { collectDiagrams } from "../utils/messagePdf";
+import { collectDiagrams, useExportIncludePrompt } from "../utils/messagePdf";
 import { resolvePersonaLanes } from "../utils/personaLanes";
 import { startersFor } from "../utils/starters";
 import {
@@ -176,6 +176,7 @@ export function ComparePage() {
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
   useDismiss(moreRef, moreOpen, () => setMoreOpen(false));
+  const [exportIncludePrompt, setExportIncludePrompt] = useExportIncludePrompt();
   const [showInsights, setShowInsights] = useState(false);
   const [showFiles, setShowFiles] = useState(false);
   const [showSnapshots, setShowSnapshots] = useState(false);
@@ -980,8 +981,10 @@ export function ComparePage() {
     if (!activeId) return;
     try {
       const token = getToken();
+      // JSON is a full backup for re-import, so it always keeps the prompts.
+      const promptParam = format === "md" && !exportIncludePrompt ? "&include_prompt=false" : "";
       const response = await fetch(
-        `${API_BASE}/api/sessions/${activeId}/export?format=${format}`,
+        `${API_BASE}/api/sessions/${activeId}/export?format=${format}${promptParam}`,
         { headers: { Authorization: `Bearer ${token}` } },
       );
       if (!response.ok) throw new Error(`Export failed: HTTP ${response.status}`);
@@ -1010,7 +1013,7 @@ export function ComparePage() {
             );
       const res = await apiFetch<{ url: string; download_name: string }>(
         `/api/sessions/${activeId}/export?fmt=${fmt}`,
-        { method: "POST", body: JSON.stringify({ diagrams }) },
+        { method: "POST", body: JSON.stringify({ diagrams, include_prompt: exportIncludePrompt }) },
       );
       await downloadMedia(res.url, res.download_name);
       setShowFiles(true);
@@ -1401,6 +1404,7 @@ export function ComparePage() {
               <div className="border-t border-gray-200 py-2 dark:border-gray-700">
                 <div className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Save and export</div>
                 <button type="button" onClick={() => { saveAsPersona(); setMobileActionsOpen(false); }} disabled={session.lanes.length === 0} className="flex min-h-11 w-full items-center rounded-lg px-3 text-left hover:bg-gray-100 disabled:opacity-40 dark:hover:bg-gray-800">★ Save as persona</button>
+                <label title="Include the request messages in Markdown, Word and PDF exports" className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-3 hover:bg-gray-100 dark:hover:bg-gray-800"><input type="checkbox" checked={exportIncludePrompt} onChange={(e) => setExportIncludePrompt(e.target.checked)} className="h-4 w-4 accent-indigo-500" />Include prompt</label>
                 <button type="button" onClick={() => { exportSession("md"); setMobileActionsOpen(false); }} className="flex min-h-11 w-full items-center rounded-lg px-3 text-left hover:bg-gray-100 dark:hover:bg-gray-800">⬇ Export Markdown</button>
                 <button type="button" onClick={() => { exportComparison("docx"); setMobileActionsOpen(false); }} className="flex min-h-11 w-full items-center rounded-lg px-3 text-left hover:bg-gray-100 dark:hover:bg-gray-800">⬇ Export Word</button>
                 <button type="button" onClick={() => { exportComparison("pdf"); setMobileActionsOpen(false); }} className="flex min-h-11 w-full items-center rounded-lg px-3 text-left hover:bg-gray-100 dark:hover:bg-gray-800">⬇ Export PDF</button>
@@ -1700,6 +1704,18 @@ export function ComparePage() {
                 >
                   ★ Save as persona
                 </button>
+                <label
+                  title="Include the request messages in Markdown, Word and PDF exports"
+                  className="flex w-full cursor-pointer items-center gap-2 border-t border-gray-100 px-3 py-1.5 text-left hover:bg-gray-100 dark:border-gray-800 dark:hover:bg-gray-800"
+                >
+                  <input
+                    type="checkbox"
+                    checked={exportIncludePrompt}
+                    onChange={(e) => setExportIncludePrompt(e.target.checked)}
+                    className="h-3 w-3 cursor-pointer accent-indigo-500"
+                  />
+                  Include prompt
+                </label>
                 <button
                   onClick={() => {
                     exportSession("md");
