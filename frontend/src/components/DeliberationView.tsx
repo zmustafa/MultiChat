@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import { MessageRenderer, CodeFoldContext } from "./MessageRenderer";
 import { TextDiff } from "./TextDiff";
 import { DeliberationAnalysis } from "./DeliberationAnalysis";
-import { DownloadPdfButton } from "./LaneColumn";
+import { DownloadResponseButton } from "./LaneColumn";
 import { FilesPanel } from "./FilesPanel";
 import { PromptField } from "./ComposerExtras";
 import { SnapshotsPanel } from "./SnapshotsPanel";
@@ -21,7 +21,7 @@ import {
 import type { ConvergenceTrace, DeliberationStep, VoteResult } from "../api/deliberation";
 import { mergeSteps, useDeliberation } from "../hooks/useDeliberation";
 import { apiFetch, downloadMedia } from "../api/client";
-import { downloadMessagePdf } from "../utils/messagePdf";
+import { downloadMessageDocx, downloadMessagePdf } from "../utils/messagePdf";
 import { useDismiss } from "../hooks/useDismiss";
 import { AuthenticatedImageLink } from "./AuthenticatedMedia";
 
@@ -360,11 +360,20 @@ function StepCard({
                 </button>
               )}
               {sessionId && step.message_id && (
-                <DownloadPdfButton
-                  onDownload={() =>
-                    downloadMessagePdf(sessionId, step.message_id!, bodyRef.current)
-                  }
-                />
+                <>
+                  <DownloadResponseButton
+                    format="pdf"
+                    onDownload={() =>
+                      downloadMessagePdf(sessionId, step.message_id!, bodyRef.current)
+                    }
+                  />
+                  <DownloadResponseButton
+                    format="docx"
+                    onDownload={() =>
+                      downloadMessageDocx(sessionId, step.message_id!, bodyRef.current)
+                    }
+                  />
+                </>
               )}
               {onContinue && (
                 <button

@@ -65,7 +65,7 @@ def _turn_attachment_flowables(turn: Turn | None, content_width: float, caption_
     """
     from reportlab.platypus import Paragraph
 
-    from .markdown_render import image_flowable, pdf_safe
+    from .markdown_render import image_flowable, pdf_markup
 
     if turn is None or not turn.attachments:
         return []
@@ -86,12 +86,12 @@ def _turn_attachment_flowables(turn: Turn | None, content_width: float, caption_
             named.append(att.filename)
             continue
         out.append(card)
-        out.append(Paragraph(escape(pdf_safe(att.filename)), caption_style))
+        out.append(Paragraph(pdf_markup(att.filename), caption_style))
 
     if named:
         out.append(
             Paragraph(
-                "Attached: " + escape(pdf_safe(", ".join(named))),
+                "Attached: " + pdf_markup(", ".join(named)),
                 caption_style,
             )
         )
@@ -199,10 +199,11 @@ def _export_docx(db, session, path, diagrams=None) -> None:
     from docx import Document
     from docx.shared import RGBColor
 
-    from .markdown_render import render_markdown_docx
+    from .markdown_render import docx_page_setup, render_markdown_docx
 
     lanes, turns, by_key, lane_label = _gather(db, session)
     doc = Document()
+    docx_page_setup(doc, _document_title(db, session))
     h = doc.add_heading(_document_title(db, session), level=0)
     h.runs[0].font.color.rgb = RGBColor(0x1E, 0x1B, 0x4B)
     for i, turn in enumerate(turns, 1):
@@ -374,11 +375,13 @@ def export_message_pdf(
     session: ChatSession,
     message: LaneMessage,
     diagrams: list[dict] | None = None,
+    include_prompt: bool = True,
 ) -> tuple[str, str, str]:
     """Export ONE lane answer as a standalone US Letter PDF.
 
     ``diagrams`` carries images the chat UI already rendered for ```mermaid``` fences, so
-    the document shows the same diagrams the user is looking at.
+    the document shows the same diagrams the user is looking at. ``include_prompt=False``
+    leaves out the request message (and its attachments).
 
     Returns (stored_name, download_name, mime_type).
     """
@@ -388,7 +391,7 @@ def export_message_pdf(
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
     from reportlab.platypus.flowables import HRFlowable
 
-    from .markdown_render import markdown_pdf_flowables, pdf_fonts, pdf_safe
+    from .markdown_render import markdown_pdf_flowables, pdf_fonts, pdf_markup
 
     fonts = pdf_fonts()
     lane = message.lane
@@ -449,21 +452,22 @@ def export_message_pdf(
 
     story: list = [
         Paragraph("MULTICHAT \u00b7 AI RESPONSE", brand_style),
-        Paragraph(escape(pdf_safe(title)), title_style),
-        Paragraph(escape(pdf_safe("  \u00b7  ".join(meta_bits))), meta_style),
+        Paragraph(pdf_markup(title), title_style),
+        Paragraph(pdf_markup("  \u00b7  ".join(meta_bits)), meta_style),
     ]
     if perf:
-        story.append(Paragraph(escape(pdf_safe(perf)), meta_style))
+        story.append(Paragraph(pdf_markup(perf), meta_style))
     story.append(Spacer(1, 12))
 
     # The prompt card carries whatever the user actually sent — the text AND any images or
     # documents attached to it, since those are as much a part of the question as the words.
     prompt_parts: list = []
-    if turn is not None and (turn.content or "").strip():
-        prompt_text = escape(pdf_safe(turn.content.strip())).replace("\n", "<br/>")
+    if include_prompt and turn is not None and (turn.content or "").strip():
+        prompt_text = pdf_markup(turn.content.strip()).replace("\n", "<br/>")
         prompt_parts.append(Paragraph(prompt_text, prompt_style))
-    # 10pt of cell padding either side, plus the accent bar.
-    prompt_parts.extend(_turn_attachment_flowables(turn, width - 30, caption_style))
+    if include_prompt:
+        # 10pt of cell padding either side, plus the accent bar.
+        prompt_parts.extend(_turn_attachment_flowables(turn, width - 30, caption_style))
     if prompt_parts:
         story.append(
             _accent_card(
@@ -475,7 +479,7 @@ def export_message_pdf(
         )
         story.append(Spacer(1, 14))
 
-    story.append(Paragraph(f"RESPONSE \u2014 {escape(pdf_safe(model))}", label_style))
+    story.append(Paragraph(f"RESPONSE \u2014 {pdf_markup(model)}", label_style))
     story.append(
         HRFlowable(width="100%", thickness=0.8, color=colors.HexColor("#C7D2FE"),
                    spaceBefore=1, spaceAfter=8)
@@ -490,6 +494,70 @@ def export_message_pdf(
     doc.build(story, canvasmaker=_numbered_canvas(f"{title} \u00b7 {model}", fonts["body"]))
     download_name = safe_download_name(f"{title}-{model}", "pdf", fallback="response")
     return stored_name, download_name, _MIME["pdf"]
+
+
+def export_message_docx(
+    db: DbSession,
+    session: ChatSession,
+    message: LaneMessage,
+    diagrams: list[dict] | None = None,
+    include_prompt: bool = True,
+) -> tuple[str, str, str]:
+    """Export ONE lane answer as a standalone Word document (the .docx twin of the PDF).
+
+    Returns (stored_name, download_name, mime_type).
+    """
+    from docx import Document
+    from docx.shared import Pt, RGBColor
+
+    from .markdown_render import docx_page_setup, render_markdown_docx
+
+    lane = message.lane
+    turn = message.turn
+    provider = db.get(Provider, lane.provider_id) if lane and lane.provider_id else None
+    model = (lane.model if lane else "") or "assistant"
+    provider_name = provider.name if provider else "provider"
+    title = _document_title(db, session)
+
+    doc = Document()
+    docx_page_setup(doc, f"{title} \u00b7 {model}")
+    doc.core_properties.title = f"{title} - {model}"
+    doc.core_properties.author = "MultiChat"
+    doc.core_properties.subject = f"{model} ({provider_name})"
+
+    def meta_line(text: str) -> None:
+        run = doc.add_paragraph().add_run(text)
+        run.font.size = Pt(8.5)
+        run.font.color.rgb = RGBColor(0x64, 0x74, 0x8B)
+
+    brand = doc.add_paragraph().add_run("MULTICHAT \u00b7 AI RESPONSE")
+    brand.bold = True
+    brand.font.size = Pt(8)
+    brand.font.color.rgb = RGBColor(0x63, 0x66, 0xF1)
+    heading = doc.add_heading(title, level=0)
+    heading.runs[0].font.color.rgb = RGBColor(0x1E, 0x1B, 0x4B)
+
+    when = message.created_at.strftime("%d %b %Y, %H:%M UTC") if message.created_at else ""
+    meta_line("  \u00b7  ".join(b for b in (model, provider_name, when) if b))
+    perf = _answer_meta(message)
+    if perf:
+        meta_line(perf)
+
+    if include_prompt and turn is not None and ((turn.content or "").strip() or turn.attachments):
+        prompt_head = doc.add_heading("Prompt", level=1)
+        prompt_head.runs[0].font.color.rgb = RGBColor(0x4F, 0x46, 0xE5)
+        if (turn.content or "").strip():
+            doc.add_paragraph(turn.content.strip())
+        _add_turn_attachments_docx(doc, turn)
+
+    response_head = doc.add_heading(f"Response \u2014 {model}", level=1)
+    response_head.runs[0].font.color.rgb = RGBColor(0x4F, 0x46, 0xE5)
+    render_markdown_docx(doc, message.content or "", base_level=2, diagrams=diagrams)
+
+    stored_name = new_stored_name("docx")
+    doc.save(os.path.join(generated_dir(), stored_name))
+    download_name = safe_download_name(f"{title}-{model}", "docx", fallback="response")
+    return stored_name, download_name, _MIME["docx"]
 
 
 # ---------------------------------------------------------------------------
@@ -510,7 +578,7 @@ def export_deliberation_pdf(db: DbSession, run, diagrams=None) -> tuple[str, str
     from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer
     from reportlab.platypus.flowables import HRFlowable
 
-    from .markdown_render import markdown_pdf_flowables, pdf_fonts, pdf_safe
+    from .markdown_render import markdown_pdf_flowables, pdf_fonts, pdf_markup
     from .models import DeliberationStep
     from .models import Session as ChatSession
 
@@ -583,16 +651,16 @@ def export_deliberation_pdf(db: DbSession, run, diagrams=None) -> tuple[str, str
     )
     story: list = [
         Paragraph("MULTICHAT \u00b7 MODEL DELIBERATION", brand),
-        Paragraph(escape(pdf_safe(title)), h_title),
-        Paragraph(escape(pdf_safe(status_line)), meta),
+        Paragraph(pdf_markup(title), h_title),
+        Paragraph(pdf_markup(status_line), meta),
         Paragraph(
-            escape(pdf_safe("Panel: " + ", ".join(sorted(l.model for l in panel)))), meta
+            pdf_markup("Panel: " + ", ".join(sorted(l.model for l in panel))), meta
         ),
         Spacer(1, 12),
         _accent_card(
             [
                 Paragraph("QUESTION", label),
-                Paragraph(escape(pdf_safe(run.prompt or "")), base),
+                Paragraph(pdf_markup(run.prompt or ""), base),
                 # 10pt of cell padding either side, plus the accent bar.
                 *_turn_attachment_flowables(turn, width - 30, caption),
             ],
@@ -618,8 +686,8 @@ def export_deliberation_pdf(db: DbSession, run, diagrams=None) -> tuple[str, str
         if not full_body:
             story.append(
                 Paragraph(
-                    escape(pdf_safe("Objections raised this round; revised wording is shown "
-                                    "in the final round below.")),
+                    pdf_markup("Objections raised this round; revised wording is shown "
+                                    "in the final round below."),
                     meta,
                 )
             )
@@ -628,9 +696,9 @@ def export_deliberation_pdf(db: DbSession, run, diagrams=None) -> tuple[str, str
                 continue
             model = step.model or (lanes[step.lane_id].model if step.lane_id in lanes else "model")
             verdict = f"  [{step.verdict}]" if step.verdict else ""
-            story.append(Paragraph(escape(pdf_safe(model + verdict)), model_head))
+            story.append(Paragraph(pdf_markup(model + verdict), model_head))
             if step.error:
-                story.append(Paragraph(escape(pdf_safe(f"failed: {step.error}")), reject))
+                story.append(Paragraph(pdf_markup(f"failed: {step.error}"), reject))
                 continue
             output = step.output_json or {}
             rejected = [r for r in (output.get("rejected_claims") or []) if isinstance(r, dict)]
@@ -639,12 +707,12 @@ def export_deliberation_pdf(db: DbSession, run, diagrams=None) -> tuple[str, str
                 for item in rejected:
                     story.append(
                         Paragraph(
-                            escape(pdf_safe(f"\u2717 {item.get('claim_id')} \u2014 {item.get('reason')}")),
+                            pdf_markup(f"\u2717 {item.get('claim_id')} \u2014 {item.get('reason')}"),
                             reject,
                         )
                     )
             elif step.phase == "critique":
-                story.append(Paragraph(escape(pdf_safe("No objections raised.")), small))
+                story.append(Paragraph(pdf_markup("No objections raised."), small))
             body = str(output.get("revised_answer") or output.get("answer") or "")
             if body and full_body:
                 story.extend(
@@ -662,7 +730,7 @@ def export_deliberation_pdf(db: DbSession, run, diagrams=None) -> tuple[str, str
             )
             story.append(
                 _accent_card(
-                    [Paragraph(escape(pdf_safe(summary)), small)],
+                    [Paragraph(pdf_markup(summary), small)],
                     width, bg="#F1F5F9", accent="#94A3B8",
                 )
             )
@@ -701,7 +769,7 @@ def export_deliberation_pdf(db: DbSession, run, diagrams=None) -> tuple[str, str
         if not items:
             continue
         block = [Paragraph(heading.upper(), label)]
-        block += [Paragraph(escape(pdf_safe(f"\u2022 {i}")), small) for i in items]
+        block += [Paragraph(pdf_markup(f"\u2022 {i}"), small) for i in items]
         story.append(KeepTogether(block))
 
     metrics = run.metrics_json or {}
@@ -715,14 +783,12 @@ def export_deliberation_pdf(db: DbSession, run, diagrams=None) -> tuple[str, str
             text = f"{model} \u2014 influence {round(value * 100)}%"
             if cap is not None:
                 text += f", capitulation {cap:.2f}"
-            rows.append(Paragraph(escape(pdf_safe(text)), small))
+            rows.append(Paragraph(pdf_markup(text), small))
         rows.append(
             Paragraph(
-                escape(
-                    pdf_safe(
-                        "Influence = share of peer-accepted claims. Capitulation = changed "
-                        "position without naming what changed its mind (lower is better)."
-                    )
+                pdf_markup(
+                    "Influence = share of peer-accepted claims. Capitulation = changed "
+                    "position without naming what changed its mind (lower is better)."
                 ),
                 meta,
             )
@@ -861,11 +927,12 @@ def _export_deliberation_docx(db: DbSession, run, path: str, diagrams=None) -> s
     from docx import Document
     from docx.shared import RGBColor
 
-    from .markdown_render import render_markdown_docx
+    from .markdown_render import docx_page_setup, render_markdown_docx
 
     title, lanes, steps, traces = _deliberation_parts(db, run)
     panel = sorted(l.model for l in lanes.values() if l.role == "responder")
     doc = Document()
+    docx_page_setup(doc, f"Deliberation \u00b7 {title}")
     head = doc.add_heading(f"Deliberation — {title}", level=0)
     head.runs[0].font.color.rgb = RGBColor(0x1E, 0x1B, 0x4B)
     doc.add_paragraph(

@@ -21,7 +21,7 @@ from ..broadcast import active_lane_ids, multiplex, request_stop
 from ..config import settings
 from ..db import get_db
 from ..documents import document_prompt_block
-from ..export import export_message_pdf
+from ..export import export_message_docx, export_message_pdf
 from ..export import export_session as build_export_file
 from ..models import (
     Attachment,
@@ -1210,11 +1210,15 @@ def _decode_diagrams(payload: MessageExportRequest | None) -> list[dict]:
 def export_single_message(
     session_id: str,
     message_id: str,
+    fmt: str = "pdf",
     payload: MessageExportRequest | None = None,
     user: User = Depends(current_user),
     db: DbSession = Depends(get_db),
 ) -> dict:
-    """Export a single lane answer as a standalone US Letter PDF."""
+    """Export a single lane answer as a standalone US Letter PDF or Word document."""
+    fmt = (fmt or "pdf").lower()
+    if fmt not in ("pdf", "docx"):
+        raise HTTPException(status_code=400, detail="format must be pdf or docx")
     s = _get_session(db, user, session_id)
     msg = db.scalars(
         select(LaneMessage)
@@ -1226,9 +1230,11 @@ def export_single_message(
     if not (msg.content or "").strip():
         raise HTTPException(status_code=400, detail="This response has no content to export")
 
+    builder = export_message_docx if fmt == "docx" else export_message_pdf
     try:
-        stored_name, download_name, mime = export_message_pdf(
-            db, s, msg, _decode_diagrams(payload)
+        stored_name, download_name, mime = builder(
+            db, s, msg, _decode_diagrams(payload),
+            include_prompt=payload.include_prompt if payload else True,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Export failed: {exc}")
@@ -1242,7 +1248,7 @@ def export_single_message(
             download_name=download_name,
             mime_type=mime,
             size_bytes=os.path.getsize(path) if os.path.exists(path) else 0,
-            kind="pdf",
+            kind=fmt,
         )
     )
     db.commit()

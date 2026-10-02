@@ -302,6 +302,7 @@ class ExportDiagram(BaseModel):
 
 class MessageExportRequest(BaseModel):
     diagrams: list[ExportDiagram] | None = None
+    include_prompt: bool = True
 
 
 # ---------- Tools ----------

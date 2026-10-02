@@ -27,7 +27,9 @@ from sqlalchemy.orm import Session as DbSession
 # A block token is a tuple whose first element names its kind:
 #   ("h", level:int, text:str)
 #   ("p", text:str)
-#   ("ul", items:list[str])       ("ol", items:list[str], start:int)
+#   ("ul", items:list[str], children:list[list[Block]])
+#   ("ol", items:list[str], start:int, children:list[list[Block]])
+#   (children[k] holds the nested blocks — sub-lists, code, paragraphs — of items[k])
 #   ("code", text:str, lang:str)
 #   ("quote", blocks:list[Block])
 #   ("hr",)
@@ -39,6 +41,7 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _HR_RE = re.compile(r"^(\*\s*){3,}$|^(-\s*){3,}$|^(_\s*){3,}$")
 _UL_RE = re.compile(r"^\s*[-*+]\s+")
 _OL_RE = re.compile(r"^\s*\d+[.)]\s+")
+_LIST_ITEM_RE = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+(.*)$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$")
 _IMAGE_ONLY_RE = re.compile(r'^!\[([^\]]*)\]\(\s*(\S+?)(?:\s+"[^"]*")?\s*\)$')
 
@@ -60,18 +63,88 @@ def _is_block_start(line: str) -> bool:
     return False
 
 
-def _absorb_continuation(
-    lines: list[str], i: int, n: int, text: str
-) -> tuple[int, str]:
-    """Fold a list item's soft-wrapped continuation lines into its text.
+def _indent_of(line: str) -> int:
+    expanded = line.replace("\t", "    ")
+    return len(expanded) - len(expanded.lstrip(" "))
 
-    A bullet whose text wraps onto the next (unmarked) source line is ONE item; without
-    this the wrapped line became a separate paragraph rendered back at the left margin.
+
+def _dedent(lines: list[str]) -> list[str]:
+    expanded = [ln.replace("\t", "    ") for ln in lines]
+    depth = min((_indent_of(ln) for ln in expanded if ln.strip()), default=0)
+    return [ln[depth:] if ln.strip() else "" for ln in expanded]
+
+
+def _parse_list(lines: list[str], i: int, n: int) -> tuple[Block, int]:
+    """Parse a bullet or numbered list starting at ``lines[i]``, including nested content.
+
+    Anything indented past an item's marker belongs to that item — sub-lists, code fences,
+    extra paragraphs — and is parsed recursively into the item's child blocks. Blank lines
+    between items (a "loose" list) do not end the list.
     """
-    while i < n and lines[i].strip() and not _is_block_start(lines[i]):
-        text = f"{text} {lines[i].strip()}".strip()
+    first = _LIST_ITEM_RE.match(lines[i])
+    base = _indent_of(first.group(1))
+    ordered = first.group(2)[0].isdigit()
+    # Keep the author's numbering: a list interrupted by a paragraph continues counting
+    # instead of restarting at 1.
+    start = int(re.match(r"\d+", first.group(2)).group()) if ordered else 1
+    items: list[str] = []
+    children: list[list[Block]] = []
+
+    def same_level_item(line: str) -> bool:
+        m = _LIST_ITEM_RE.match(line)
+        return bool(
+            m
+            and not _HR_RE.match(line.strip())
+            and abs(_indent_of(m.group(1)) - base) <= 1
+            and m.group(2)[0].isdigit() == ordered
+        )
+
+    while i < n and same_level_item(lines[i]):
+        m = _LIST_ITEM_RE.match(lines[i])
+        marker_indent = _indent_of(m.group(1))
+        text = m.group(3).strip()
+        body: list[str] = []
         i += 1
-    return i, text
+        while i < n:
+            line = lines[i]
+            if not line.strip():
+                j = i
+                while j < n and not lines[j].strip():
+                    j += 1
+                if j < n and _indent_of(lines[j]) >= marker_indent + 2:
+                    body.extend(lines[i:j])
+                    i = j
+                    continue
+                if j < n and same_level_item(lines[j]):
+                    i = j
+                break
+            if _indent_of(line) >= marker_indent + 2:
+                # An indented line that merely continues the item's first paragraph.
+                if not body and not _is_block_start(line) and "|" not in line:
+                    text = f"{text} {line.strip()}"
+                else:
+                    body.append(line)
+                i += 1
+                continue
+            if _is_block_start(line) or "|" in line:
+                break
+            # Lazy continuation: an unindented soft-wrapped line of the item's text.
+            if body:
+                body.append(" " * (marker_indent + 2) + line.strip())
+            else:
+                text = f"{text} {line.strip()}"
+            i += 1
+        items.append(text.strip())
+        children.append(parse_blocks("\n".join(_dedent(body))) if body else [])
+
+    block: Block = ("ol", items, start, children) if ordered else ("ul", items, children)
+    return block, i
+
+
+def list_children(block: Block) -> list[list[Block]]:
+    """Child blocks of each item of a ``ul``/``ol`` token (empty lists when none)."""
+    kids = block[3] if block[0] == "ol" else block[2]
+    return list(kids) if kids else [[] for _ in block[1]]
 
 
 def _split_row(line: str) -> list[str]:
@@ -157,28 +230,9 @@ def parse_blocks(md: str) -> list[Block]:
             blocks.append(("table", header, rows))
             continue
 
-        if _UL_RE.match(line):
-            items: list[str] = []
-            while i < n and _UL_RE.match(lines[i]):
-                text = re.sub(r"^\s*[-*+]\s+", "", lines[i]).strip()
-                i += 1
-                i, text = _absorb_continuation(lines, i, n, text)
-                items.append(text)
-            blocks.append(("ul", items))
-            continue
-
-        if _OL_RE.match(line):
-            # Keep the author's numbering: a list interrupted by a paragraph continues
-            # counting instead of restarting at 1.
-            first = re.match(r"^\s*(\d+)", line)
-            start = int(first.group(1)) if first else 1
-            items = []
-            while i < n and _OL_RE.match(lines[i]):
-                text = re.sub(r"^\s*\d+[.)]\s+", "", lines[i]).strip()
-                i += 1
-                i, text = _absorb_continuation(lines, i, n, text)
-                items.append(text)
-            blocks.append(("ol", items, start))
+        if _LIST_ITEM_RE.match(line):
+            block, i = _parse_list(lines, i, n)
+            blocks.append(block)
             continue
 
         # Paragraph: gather soft-wrapped lines until a blank line or a new block.
@@ -197,38 +251,112 @@ def parse_blocks(md: str) -> list[Block]:
 # ---------------------------------------------------------------------------
 
 _INLINE_RE = re.compile(
-    r"`([^`]+)`"                      # 1 code
-    r"|\*\*([^*]+)\*\*"              # 2 bold
-    r"|__([^_]+)__"                  # 3 bold
-    r"|\*([^*]+)\*"                  # 4 italic
-    r"|(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])"  # 5 italic
-    r"|\[([^\]]+)\]\(([^)\s]+)\)"    # 6 link text, 7 href
+    r"`([^`]+)`"                                          # 1 code
+    r"|(<[bB][rR]\s*/?>)"                                 # 2 line break
+    r"|\*\*(?=\S)(.+?)(?<=\S)\*\*"                        # 3 bold
+    r"|__(?=\S)(.+?)(?<=\S)__"                            # 4 bold
+    r"|\*(?=[^\s*])([^*]+?)(?<=[^\s*])\*"                 # 5 italic
+    r"|(?<![A-Za-z0-9])_(?=\S)([^_]+?)(?<=\S)_(?![A-Za-z0-9])"  # 6 italic
+    r"|\[([^\]]+)\]\(([^)\s]+)\)"                         # 7 link text, 8 href
+    r"|\$\$([^$]+?)\$\$"                                  # 9 display math
+    # Inline math must contain a command, so "$5 and $10" stays plain text.
+    r"|\$(?=[^$\n]*\\)(?=\S)([^$\n]+?)(?<=\S)\$"          # 10 inline math
+    r"|\\\((.+?)\\\)"                                     # 11 inline math
 )
 
+# The TeX that models sprinkle into prose ("File $\rightarrow$ Save"). The chat UI renders
+# it with KaTeX; documents approximate it with Unicode. Anything else stays as its source.
+_TEX_SYMBOLS = {
+    "rightarrow": "\u2192", "to": "\u2192", "longrightarrow": "\u2192",
+    "leftarrow": "\u2190", "gets": "\u2190", "longleftarrow": "\u2190",
+    "leftrightarrow": "\u2194", "Rightarrow": "\u21d2", "implies": "\u21d2",
+    "Longrightarrow": "\u21d2", "Leftarrow": "\u21d0", "Leftrightarrow": "\u21d4",
+    "iff": "\u21d4", "uparrow": "\u2191", "downarrow": "\u2193", "mapsto": "\u21a6",
+    "times": "\u00d7", "cdot": "\u00b7", "div": "\u00f7", "pm": "\u00b1", "mp": "\u2213",
+    "le": "\u2264", "leq": "\u2264", "ge": "\u2265", "geq": "\u2265", "ne": "\u2260",
+    "neq": "\u2260", "approx": "\u2248", "sim": "~", "equiv": "\u2261", "infty": "\u221e",
+    "ll": "\u226a", "gg": "\u226b", "propto": "\u221d", "partial": "\u2202",
+    "checkmark": "\u2713", "degree": "\u00b0", "ldots": "\u2026", "dots": "\u2026",
+    "cdots": "\u2026", "sum": "\u2211", "prod": "\u220f", "int": "\u222b",
+    "alpha": "\u03b1", "beta": "\u03b2", "gamma": "\u03b3", "delta": "\u03b4",
+    "Delta": "\u0394", "epsilon": "\u03b5", "theta": "\u03b8", "lambda": "\u03bb",
+    "mu": "\u03bc", "pi": "\u03c0", "sigma": "\u03c3", "Sigma": "\u03a3", "tau": "\u03c4",
+    "phi": "\u03c6", "omega": "\u03c9", "Omega": "\u03a9",
+    "in": "\u2208", "notin": "\u2209", "subset": "\u2282", "subseteq": "\u2286",
+    "cup": "\u222a", "cap": "\u2229", "forall": "\u2200", "exists": "\u2203",
+    "neg": "\u00ac", "land": "\u2227", "lor": "\u2228", "emptyset": "\u2205",
+    "quad": " ", "qquad": "  ", ",": " ", ";": " ", ":": " ", " ": " ", "!": "",
+    "%": "%", "$": "$", "&": "&", "#": "#", "_": "_", "{": "{", "}": "}",
+    "left": "", "right": "",
+}
+_SUPERSCRIPT = str.maketrans("0123456789+-=()n", "\u2070\u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077\u2078\u2079\u207a\u207b\u207c\u207d\u207e\u207f")
 
-def _inline_spans(text: str) -> list[tuple[str, set[str], str | None]]:
-    """Split inline Markdown into (text, styles, href) spans."""
+
+def tex_to_text(expr: str) -> str | None:
+    """Approximate a small TeX expression with Unicode, or None if it is beyond that."""
+    s = expr.strip()
+    s = re.sub(
+        r"\\(?:text|mathrm|mathbf|textbf|mathit|textit|mathsf|texttt|operatorname|mbox)"
+        r"\s*\{([^{}]*)\}",
+        r"\1",
+        s,
+    )
+    s = re.sub(r"\\d?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}", r"\1/\2", s)
+    s = re.sub(r"\\sqrt\s*\{([^{}]*)\}", "\u221a(\\1)", s)
+    unknown = False
+
+    def symbol(m: re.Match) -> str:
+        nonlocal unknown
+        name = m.group(1)
+        if name in _TEX_SYMBOLS:
+            return _TEX_SYMBOLS[name]
+        unknown = True
+        return m.group(0)
+
+    s = re.sub(r"\\([A-Za-z]+|.)", symbol, s)
+    if unknown:
+        return None
+    s = re.sub(
+        r"\^\{([0-9+\-=()n]+)\}|\^([0-9n])",
+        lambda m: (m.group(1) or m.group(2)).translate(_SUPERSCRIPT),
+        s,
+    )
+    s = s.replace("{", "").replace("}", "").replace("~", " ")
+    return re.sub(r" {2,}", " ", s)
+
+
+def _inline_spans(
+    text: str, styles: frozenset[str] = frozenset(), href: str | None = None
+) -> list[tuple[str, set[str], str | None]]:
+    """Split inline Markdown into (text, styles, href) spans.
+
+    Emphasis and link text are parsed recursively, so ``**[a link](url)**`` is a bold link
+    and ``**run `cmd`**`` is bold text with inline code — not literal brackets or backticks.
+    A ``<br>`` becomes a ``("\\n", {"br"}, None)`` span.
+    """
     spans: list[tuple[str, set[str], str | None]] = []
     pos = 0
     for m in _INLINE_RE.finditer(text):
         if m.start() > pos:
-            spans.append((text[pos:m.start()], set(), None))
-        if m.group(1) is not None:
-            spans.append((m.group(1), {"code"}, None))
-        elif m.group(2) is not None:
-            spans.append((m.group(2), {"bold"}, None))
-        elif m.group(3) is not None:
-            spans.append((m.group(3), {"bold"}, None))
-        elif m.group(4) is not None:
-            spans.append((m.group(4), {"italic"}, None))
-        elif m.group(5) is not None:
-            spans.append((m.group(5), {"italic"}, None))
-        elif m.group(6) is not None:
-            spans.append((m.group(6), {"link"}, m.group(7)))
+            spans.append((text[pos:m.start()], set(styles), href))
+        g = m.group
+        if g(1) is not None:
+            spans.append((g(1), set(styles) | {"code"}, href))
+        elif g(2) is not None:
+            spans.append(("\n", set(styles) | {"br"}, href))
+        elif g(3) is not None or g(4) is not None:
+            spans.extend(_inline_spans(g(3) or g(4), styles | {"bold"}, href))
+        elif g(5) is not None or g(6) is not None:
+            spans.extend(_inline_spans(g(5) or g(6), styles | {"italic"}, href))
+        elif g(7) is not None:
+            spans.extend(_inline_spans(g(7), styles | {"link"}, g(8)))
+        else:
+            math = g(9) or g(10) or g(11) or ""
+            spans.append((tex_to_text(math) or m.group(0), set(styles), href))
         pos = m.end()
     if pos < len(text):
-        spans.append((text[pos:], set(), None))
-    return spans or [(text, set(), None)]
+        spans.append((text[pos:], set(styles), href))
+    return spans or [(text, set(styles), href)]
 
 
 def _strip_inline(text: str) -> str:
@@ -239,24 +367,140 @@ def _strip_inline(text: str) -> str:
 # DOCX rendering
 # ---------------------------------------------------------------------------
 
+# Child order of <w:pPr> and <w:trPr> in the OOXML schema. Word rejects a document whose
+# elements are out of sequence, so hand-built properties are inserted in schema order.
+_PPR_ORDER = (
+    "w:pStyle", "w:keepNext", "w:keepLines", "w:pageBreakBefore", "w:framePr",
+    "w:widowControl", "w:numPr", "w:suppressLineNumbers", "w:pBdr", "w:shd", "w:tabs",
+    "w:suppressAutoHyphens", "w:kinsoku", "w:wordWrap", "w:overflowPunct",
+    "w:topLinePunct", "w:autoSpaceDE", "w:autoSpaceDN", "w:bidi", "w:adjustRightInd",
+    "w:snapToGrid", "w:spacing", "w:ind", "w:contextualSpacing", "w:mirrorIndents",
+    "w:suppressOverlap", "w:jc", "w:textDirection", "w:textAlignment",
+    "w:textboxTightWrap", "w:outlineLvl", "w:divId", "w:cnfStyle", "w:rPr", "w:sectPr",
+    "w:pPrChange",
+)
+_TRPR_ORDER = (
+    "w:cnfStyle", "w:divId", "w:gridBefore", "w:gridAfter", "w:wBefore", "w:wAfter",
+    "w:cantSplit", "w:trHeight", "w:tblHeader", "w:tblCellSpacing", "w:jc", "w:hidden",
+)
+_TBLPR_ORDER = (
+    "w:tblStyle", "w:tblpPr", "w:tblOverlap", "w:bidiVisual", "w:tblStyleRowBandSize",
+    "w:tblStyleColBandSize", "w:tblW", "w:jc", "w:tblCellSpacing", "w:tblInd",
+    "w:tblBorders", "w:shd", "w:tblLayout", "w:tblCellMar", "w:tblLook",
+)
 
-def _add_inline_docx(paragraph: Any, text: str) -> None:
+
+def _insert_ordered(parent: Any, child: Any, order: Sequence[str]) -> None:
+    from docx.oxml.ns import qn
+
+    tags = [qn(t) for t in order]
+    tag = child.tag
+    for existing in parent.findall(tag):
+        parent.remove(existing)
+    later = set(tags[tags.index(tag) + 1:]) if tag in tags else set()
+    for idx, existing in enumerate(parent):
+        if existing.tag in later:
+            parent.insert(idx, child)
+            return
+    parent.append(child)
+
+
+def _docx_el(tag: str, **attrs: str) -> Any:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    el = OxmlElement(tag)
+    for key, value in attrs.items():
+        el.set(qn(f"w:{key}"), value)
+    return el
+
+
+def _docx_pbdr(paragraph: Any, sides: Sequence[str], color: str, size: int = 6, space: int = 1):
+    pbdr = _docx_el("w:pBdr")
+    for side in sides:
+        pbdr.append(_docx_el(f"w:{side}", val="single", sz=str(size), space=str(space), color=color))
+    _insert_ordered(paragraph._p.get_or_add_pPr(), pbdr, _PPR_ORDER)
+
+
+def _docx_hyperlink(paragraph: Any, text: str, url: str) -> Any:
+    """Append a clickable external hyperlink run and return it for styling."""
+    from docx.opc.constants import RELATIONSHIP_TYPE
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.text.run import Run
+
+    r_id = paragraph.part.relate_to(url, RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+    link = OxmlElement("w:hyperlink")
+    link.set(qn("r:id"), r_id)
+    r = OxmlElement("w:r")
+    link.append(r)
+    paragraph._p.append(link)
+    run = Run(r, paragraph)
+    run.text = text
+    return run
+
+
+_EXTERNAL_HREF_RE = re.compile(r"^(https?://|mailto:)", re.I)
+
+
+def _add_inline_docx(
+    paragraph: Any, text: str, *, size: float | None = None, bold: bool = False
+) -> None:
     from docx.shared import Pt, RGBColor
 
     for content, styles, href in _inline_spans(text):
+        if "br" in styles:
+            paragraph.add_run().add_break()
+            continue
         if not content:
             continue
-        run = paragraph.add_run(content)
-        if "bold" in styles:
+        if href and _EXTERNAL_HREF_RE.match(href):
+            run = _docx_hyperlink(paragraph, content, href)
+        else:
+            run = paragraph.add_run(content)
+        if size:
+            run.font.size = Pt(size)
+        if bold or "bold" in styles:
             run.bold = True
         if "italic" in styles:
             run.italic = True
         if "code" in styles:
             run.font.name = "Consolas"
-            run.font.size = Pt(9.5)
+            run.font.size = Pt((size or 11) - 1.5)
+            if not href:
+                run.font.color.rgb = RGBColor(0xB9, 0x1C, 0x1C)
         if href or "link" in styles:
             run.font.color.rgb = RGBColor(0x4F, 0x46, 0xE5)
             run.underline = True
+
+
+def _docx_content_width(doc: Any) -> int:
+    section = doc.sections[-1]
+    return int(section.page_width - section.left_margin - section.right_margin)
+
+
+def _docx_new_list_num(doc: Any, style_name: str, start: int) -> int | None:
+    """A fresh numbering instance for ``style_name`` that restarts at ``start``.
+
+    Every paragraph styled "List Number" shares one counter, so without this each numbered
+    list in a document carries on from where the previous one stopped.
+    """
+    try:
+        style = doc.styles[style_name]
+        num_pr = style.element.pPr.numPr
+        numbering = doc.part.numbering_part.numbering_definitions._numbering
+        abstract_id = numbering.num_having_numId(num_pr.numId.val).abstractNumId.val
+        num = numbering.add_num(abstract_id)
+        num.add_lvlOverride(ilvl=0).add_startOverride(start)
+        return num.numId
+    except Exception:  # noqa: BLE001 — a template without numbering keeps the shared counter
+        return None
+
+
+def _docx_apply_num(paragraph: Any, num_id: int) -> None:
+    num_pr = paragraph._p.get_or_add_pPr().get_or_add_numPr()
+    num_pr.get_or_add_ilvl().val = 0
+    num_pr.get_or_add_numId().val = num_id
 
 
 def render_markdown_docx(
@@ -276,6 +520,7 @@ def render_markdown_docx(
     """
     import io
 
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Emu, Inches
 
     pending = [dict(d) for d in (diagrams or [])]
@@ -287,18 +532,20 @@ def render_markdown_docx(
                 return pending.pop(i)
         return None
 
-    def place_diagram(data: bytes) -> bool:
+    def place_diagram(data: bytes, natural_px: float = 0.0) -> bool:
+        # Same sizing rule as the PDF: the diagram's own layout width, scaled up a little
+        # for print, capped by the text column and a page's height.
+        max_w = _docx_content_width(doc)
+        max_h = Inches(8.0)
+        width = min(max_w, int(Inches(natural_px * 1.2 / 72))) if natural_px else max_w
         try:
-            shape = doc.add_picture(io.BytesIO(data))
+            shape = doc.add_picture(io.BytesIO(data), width=Emu(width))
         except Exception:  # noqa: BLE001 — fall back to the source text
             return False
-        max_w, max_h = Inches(6.0), Inches(4.5)
-        if shape.width > max_w:
-            shape.height = Emu(int(shape.height * max_w / shape.width))
-            shape.width = max_w
         if shape.height > max_h:
             shape.width = Emu(int(shape.width * max_h / shape.height))
             shape.height = max_h
+        doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
         return True
 
     _render_blocks_docx(
@@ -306,20 +553,33 @@ def render_markdown_docx(
     )
 
 
+# The default template's bullet/number styles for list nesting levels 1-3.
+_DOCX_LIST_STYLES = {
+    "ul": ("List Bullet", "List Bullet 2", "List Bullet 3"),
+    "ol": ("List Number", "List Number 2", "List Number 3"),
+}
+_DOCX_LIST_STEP = 0.25  # inches of indent per list level in those styles
+
+
 def _render_blocks_docx(
     doc: Any,
     blocks: Sequence[Block],
     base_level: int,
     take_diagram: Callable[[str], dict | None],
-    place_diagram: Callable[[bytes], bool],
+    place_diagram: Callable[..., bool],
     indent: float = 0.0,
+    depth: int = 0,
 ) -> None:
+    """``indent`` is a block quote's extra left indent; ``depth`` the list nesting level."""
     from docx.shared import Inches, Pt, RGBColor
+
+    # Content inside a list item lines up with the item's text.
+    left = indent + _DOCX_LIST_STEP * depth
 
     def para(style: str | None = None):
         p = doc.add_paragraph(style=style) if style else doc.add_paragraph()
-        if indent:
-            p.paragraph_format.left_indent = Inches(indent)
+        if left:
+            p.paragraph_format.left_indent = Inches(left)
         return p
 
     for block in blocks:
@@ -327,51 +587,178 @@ def _render_blocks_docx(
         if kind == "h":
             level = min(base_level + block[1] - 1, 9)
             hp = doc.add_heading("", level=level)
-            if indent:
-                hp.paragraph_format.left_indent = Inches(indent)
+            if left:
+                hp.paragraph_format.left_indent = Inches(left)
             _add_inline_docx(hp, block[2])
         elif kind == "p":
             _add_inline_docx(para(), block[1])
-        elif kind == "ul":
-            for it in block[1]:
-                _add_inline_docx(para("List Bullet"), it)
-        elif kind == "ol":
-            for it in block[1]:
-                _add_inline_docx(para("List Number"), it)
+        elif kind in ("ul", "ol"):
+            style = _DOCX_LIST_STYLES[kind][min(depth, 2)]
+            num_id = (
+                _docx_new_list_num(doc, style, block[2] if len(block) > 2 else 1)
+                if kind == "ol"
+                else None
+            )
+            for text, kids in zip(block[1], list_children(block), strict=False):
+                p = doc.add_paragraph(style=style)
+                if num_id is not None:
+                    _docx_apply_num(p, num_id)
+                if indent or depth > 2:
+                    # The list styles only know their own level; a quote (or a 4th level)
+                    # needs the indent spelled out, keeping the hanging bullet.
+                    fmt = p.paragraph_format
+                    fmt.left_indent = Inches(left + _DOCX_LIST_STEP)
+                    fmt.first_line_indent = Inches(-_DOCX_LIST_STEP)
+                _add_inline_docx(p, text)
+                if kids:
+                    _render_blocks_docx(
+                        doc, kids, base_level, take_diagram, place_diagram, indent, depth + 1
+                    )
         elif kind == "code":
             lang = block[2] if len(block) > 2 else ""
             if lang == "mermaid":
                 d = take_diagram(block[1])
-                if d and d.get("data") and place_diagram(d["data"]):
+                if d and d.get("data") and place_diagram(
+                    d["data"], float(d.get("width") or 0)
+                ):
                     continue
-            for cl in block[1].split("\n"):
-                p = para()
-                run = p.add_run(cl or " ")
+            # One shaded, bordered paragraph with line breaks — not a paragraph per line,
+            # which spreads code out with body-text spacing.
+            lines = (block[1] or " ").replace("\t", "    ").split("\n")
+            p = para()
+            fmt = p.paragraph_format
+            fmt.space_before, fmt.space_after = Pt(4), Pt(10)
+            fmt.line_spacing = 1.0
+            fmt.left_indent = Inches(left + 0.08)
+            fmt.right_indent = Inches(0.08)
+            if len(lines) <= 40:
+                fmt.keep_together = True
+            _docx_pbdr(p, ("top", "left", "bottom", "right"), "D0D7DE", size=4, space=4)
+            _insert_ordered(
+                p._p.get_or_add_pPr(),
+                _docx_el("w:shd", val="clear", color="auto", fill="F6F8FA"),
+                _PPR_ORDER,
+            )
+            for li, line in enumerate(lines):
+                run = p.add_run(line)
                 run.font.name = "Consolas"
                 run.font.size = Pt(9)
-                run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+                run.font.color.rgb = RGBColor(0x1F, 0x23, 0x28)
+                if li < len(lines) - 1:
+                    run.add_break()
         elif kind == "quote":
             # Quoted content keeps its own block structure; the quote only adds an indent.
             _render_blocks_docx(
-                doc, block[1], base_level, take_diagram, place_diagram, indent + 0.3
+                doc, block[1], base_level, take_diagram, place_diagram, indent + 0.3, depth
             )
         elif kind == "hr":
-            para().add_run("─" * 30)
+            p = para()
+            p.paragraph_format.space_before = Pt(2)
+            p.paragraph_format.space_after = Pt(8)
+            _docx_pbdr(p, ("bottom",), "CBD5E1")
         elif kind == "table":
-            cols, rows = block[1], block[2]
-            if not cols:
-                continue
-            t = doc.add_table(rows=1, cols=len(cols))
-            try:
-                t.style = "Light Grid Accent 1"
-            except Exception:  # noqa: BLE001
-                pass
-            for c_i, c in enumerate(cols):
-                t.rows[0].cells[c_i].text = _strip_inline(str(c))
-            for r in rows:
-                cells = t.add_row().cells
-                for c_i in range(len(cols)):
-                    cells[c_i].text = _strip_inline(str(r[c_i])) if c_i < len(r) else ""
+            _render_table_docx(doc, block[1], block[2], left)
+
+
+def _render_table_docx(doc: Any, cols: list[str], rows: list[list[str]], left: float) -> None:
+    from docx.shared import Inches, Pt
+
+    if not cols:
+        return
+    t = doc.add_table(rows=1, cols=len(cols))
+    try:
+        t.style = "Light Grid Accent 1"
+    except Exception:  # noqa: BLE001
+        pass
+    if left:
+        _insert_ordered(
+            t._tbl.tblPr,
+            _docx_el("w:tblInd", w=str(int(left * 1440)), type="dxa"),
+            _TBLPR_ORDER,
+        )
+
+    def fill(cell: Any, text: str, header: bool) -> None:
+        # Cells keep their inline formatting — bold, code, links and <br> line breaks.
+        p = cell.paragraphs[0]
+        p.paragraph_format.space_after = Pt(0)
+        _add_inline_docx(p, str(text), size=9.5, bold=header)
+
+    header_row = t.rows[0]
+    for c_i, c in enumerate(cols):
+        fill(header_row.cells[c_i], c, True)
+    # Repeat the header on every page the table spans.
+    _insert_ordered(header_row._tr.get_or_add_trPr(), _docx_el("w:tblHeader"), _TRPR_ORDER)
+    for r in rows:
+        row = t.add_row()
+        for c_i in range(len(cols)):
+            fill(row.cells[c_i], r[c_i] if c_i < len(r) else "", False)
+        # Keep ordinary rows whole; a row taller than a page must be allowed to break.
+        if sum(len(str(c)) for c in r) < 1200:
+            _insert_ordered(row._tr.get_or_add_trPr(), _docx_el("w:cantSplit"), _TRPR_ORDER)
+    spacer = doc.add_paragraph()
+    spacer.paragraph_format.space_after = Pt(4)
+    spacer.paragraph_format.left_indent = Inches(left) if left else None
+
+
+def docx_page_setup(doc: Any, footer_left: str = "") -> None:
+    """US Letter, 0.75in margins and a "context · Page X of Y" footer — matching the PDFs."""
+    from docx.shared import Inches
+
+    for section in doc.sections:
+        section.page_width, section.page_height = Inches(8.5), Inches(11)
+        section.left_margin = section.right_margin = Inches(0.75)
+        section.top_margin = Inches(0.7)
+        section.bottom_margin = Inches(0.75)
+        section.footer_distance = Inches(0.4)
+        _docx_footer(section, footer_left)
+
+
+def _docx_footer(section: Any, footer_left: str) -> None:
+    from docx.enum.text import WD_TAB_ALIGNMENT
+    from docx.oxml.ns import qn
+    from docx.shared import Emu, Pt, RGBColor
+
+    footer = section.footer
+    p = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+    for child in list(p._p):
+        if child.tag != qn("w:pPr"):
+            p._p.remove(child)
+    tabs = p.paragraph_format.tab_stops
+    # The template's Footer style brings centre/right stops sized for 1.25in margins; clear
+    # them so the page number lands on this section's right margin.
+    for inherited in p.style.paragraph_format.tab_stops:
+        tabs.add_tab_stop(inherited.position, WD_TAB_ALIGNMENT.CLEAR)
+    tabs.add_tab_stop(
+        Emu(int(section.page_width - section.left_margin - section.right_margin)),
+        WD_TAB_ALIGNMENT.RIGHT,
+    )
+    _docx_pbdr(p, ("top",), "E2E8F0", size=4, space=4)
+
+    def run(text: str = ""):
+        r = p.add_run(text)
+        r.font.size = Pt(7.5)
+        r.font.color.rgb = RGBColor(0x94, 0xA3, 0xB8)
+        return r
+
+    run(footer_left)
+    run("\tPage ")
+    _docx_field("PAGE", run)
+    run(" of ")
+    _docx_field("NUMPAGES", run)
+
+
+def _docx_field(instr: str, make_run: Callable[..., Any]) -> None:
+    """Append a Word field (PAGE, NUMPAGES…) that Word computes when it lays out the page."""
+    begin = make_run()
+    begin._r.append(_docx_el("w:fldChar", fldCharType="begin"))
+    code = make_run()
+    instr_el = _docx_el("w:instrText")
+    instr_el.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    instr_el.text = f" {instr} "
+    code._r.append(instr_el)
+    make_run()._r.append(_docx_el("w:fldChar", fldCharType="separate"))
+    make_run("1")
+    make_run()._r.append(_docx_el("w:fldChar", fldCharType="end"))
 
 
 # ---------------------------------------------------------------------------
@@ -390,9 +777,10 @@ _GLYPH_OK: Callable[[str], bool] | None = None
 _CHAR_FALLBACKS = {
     "\u2192": "->", "\u2190": "<-", "\u2191": "^", "\u2193": "v", "\u2194": "<->",
     "\u21d2": "=>", "\u21d0": "<=", "\u21d4": "<=>",
-    "\u2713": "[x]", "\u2714": "[x]", "\u2705": "[x]", "\u2611": "[x]",
-    "\u2717": "[ ]", "\u2718": "[ ]", "\u274c": "[!]", "\u2b55": "( )", "\u2b1c": "[ ]",
-    "\u26a0": "!", "\u2139": "i", "\u2757": "!", "\u2753": "?",
+    "\u2713": "[OK]", "\u2714": "[OK]", "\u2705": "[OK]", "\u2611": "[OK]",
+    "\u2717": "[X]", "\u2718": "[X]", "\u274c": "[X]", "\u2716": "[X]", "\u274e": "[X]",
+    "\u2b55": "( )", "\u2b1c": "[ ]", "\u2795": "+", "\u2796": "-",
+    "\u26a0": "[!]", "\u2139": "i", "\u2757": "!", "\u2753": "?",
     "\u2605": "*", "\u2606": "*", "\u2b50": "*", "\u25cf": "\u2022", "\u25cb": "\u2022",
     "\u25aa": "\u2022", "\u25ab": "\u2022", "\u25e6": "\u2022", "\u2023": "\u2022",
     "\u25b6": ">", "\u25c0": "<", "\u25b2": "^", "\u25bc": "v",
@@ -411,12 +799,27 @@ def _font_dirs() -> list[str]:
     return [
         "/usr/share/fonts/truetype/dejavu",
         "/usr/share/fonts/dejavu",
+        "/usr/share/fonts/truetype/noto",
+        "/usr/share/fonts/noto",
+        "/usr/share/fonts/truetype/ancient-scripts",
         "/usr/share/fonts/TTF",
         "/usr/local/share/fonts",
         "/Library/Fonts",
+        "/System/Library/Fonts/Supplemental",
         "C:/Windows/Fonts",
         os.path.join(os.path.dirname(reportlab.__file__), "fonts"),
     ]
+
+
+# Monochrome fonts that draw the symbols and emoji the body font lacks (check marks,
+# crosses, warning signs, arrows). The first one found becomes the "symbol" face.
+_SYMBOL_FONT_FILES = (
+    "seguisym.ttf",                  # Windows: Segoe UI Symbol
+    "NotoSansSymbols2-Regular.ttf",
+    "Symbola.ttf",
+    "DejaVuSans.ttf",
+    "Arial Unicode.ttf",             # macOS
+)
 
 
 def pdf_fonts() -> dict[str, str]:
@@ -492,9 +895,71 @@ def pdf_fonts() -> dict[str, str]:
             fonts["mono"], fonts["monoBold"] = "MCMono", "MCMono-Bold"
     except Exception:  # noqa: BLE001
         pass
+    try:
+        body_path = find("DejaVuSans.ttf") if fonts["body"].startswith("MCSans") else None
+        for filename in _SYMBOL_FONT_FILES:
+            path = find(filename)
+            if path and path != body_path:
+                pdfmetrics.registerFont(TTFont("MCSymbol", path))
+                pdfmetrics.registerFontFamily(
+                    "MCSymbol", normal="MCSymbol", bold="MCSymbol",
+                    italic="MCSymbol", boldItalic="MCSymbol",
+                )
+                fonts["symbol"] = "MCSymbol"
+                break
+    except Exception:  # noqa: BLE001 — without it, symbols fall back to transliteration
+        fonts.pop("symbol", None)
 
     _FONTS = fonts
     return fonts
+
+
+_SYMBOL_OK: Callable[[str], bool] | None = None
+# Emoji presentation selectors and joiners carry no glyph of their own.
+_INVISIBLE = {"\ufe0f", "\ufe0e", "\u200d"}
+
+
+def _symbol_ok() -> Callable[[str], bool]:
+    global _SYMBOL_OK
+    if _SYMBOL_OK is not None:
+        return _SYMBOL_OK
+
+    from reportlab.pdfbase import pdfmetrics
+
+    table = None
+    name = pdf_fonts().get("symbol")
+    if name:
+        try:
+            table = pdfmetrics.getFont(name).face.charToGlyph
+        except Exception:  # noqa: BLE001
+            table = None
+    _SYMBOL_OK = (lambda ch: ord(ch) in table) if table else (lambda ch: False)
+    return _SYMBOL_OK
+
+
+def pdf_markup(text: str) -> str:
+    """Escape ``text`` for a reportlab Paragraph, drawing what the body font can't.
+
+    Symbols the body font lacks (✅ ❌ ⚠ →) switch to the symbol font when one is installed;
+    anything neither font has is transliterated exactly as :func:`pdf_safe` would.
+    """
+    if not text:
+        return text
+    ok, sym = _glyph_ok(), _symbol_ok()
+    face = pdf_fonts().get("symbol")
+    segments: list[tuple[bool, str]] = []  # (drawn with the symbol font?, text)
+    for ch in text:
+        if ch in _INVISIBLE:
+            continue
+        is_sym = not (ch in "\n\t" or ok(ch)) and sym(ch)
+        if segments and segments[-1][0] == is_sym:
+            segments[-1] = (is_sym, segments[-1][1] + ch)
+        else:
+            segments.append((is_sym, ch))
+    return "".join(
+        f'<font face="{face}">{escape(s)}</font>' if is_sym else escape(pdf_safe(s))
+        for is_sym, s in segments
+    )
 
 
 def _glyph_ok() -> Callable[[str], bool]:
@@ -526,7 +991,7 @@ def _glyph_ok() -> Callable[[str], bool]:
 def pdf_safe(text: str) -> str:
     """Make ``text`` renderable by the active PDF font.
 
-    Characters the font cannot draw are transliterated (``->`` for an arrow, ``[x]`` for a
+    Characters the font cannot draw are transliterated (``->`` for an arrow, ``[OK]`` for a
     check mark, accents stripped) or dropped, so the PDF never shows missing-glyph boxes.
     """
     if not text:
@@ -547,6 +1012,30 @@ def pdf_safe(text: str) -> str:
                 repl = ""
         out.append("".join(c for c in repl if ok(c)))
     return "".join(out)
+
+
+def _fit_footer_text(text: str, font: str, size: float, max_width: float) -> str:
+    """Shorten footer context to ``max_width`` with an ellipsis.
+
+    Footers read "<title> · <model>"; the model is what tells one exported answer from
+    another, so the title gives way first and the part after the last " · " is kept.
+    """
+    from reportlab.pdfbase import pdfmetrics
+
+    def width(s: str) -> float:
+        return pdfmetrics.stringWidth(s, font, size)
+
+    if width(text) <= max_width:
+        return text
+    ellipsis = pdf_safe("\u2026") or "..."
+    head, sep, tail = text.rpartition(" \u00b7 ")
+    if sep and width(ellipsis + sep + tail) <= max_width * 0.75:
+        while head and width(head.rstrip() + ellipsis + sep + tail) > max_width:
+            head = head[:-1]
+        return head.rstrip() + ellipsis + sep + tail
+    while text and width(text.rstrip() + ellipsis) > max_width:
+        text = text[:-1]
+    return text.rstrip() + ellipsis
 
 
 def footer_canvas(
@@ -613,9 +1102,7 @@ def footer_canvas(
             self.restoreState()
 
         def _draw_clipped(self, text: str, x: float, y: float, max_width: float) -> None:
-            while text and pdfmetrics.stringWidth(text, font, 7.5) > max_width:
-                text = text[:-1]
-            self.drawString(x, y, text)
+            self.drawString(x, y, _fit_footer_text(text, font, 7.5, max_width))
 
         def _draw_link(self, cx: float, y: float) -> None:
             self.setFillColor(HexColor("#6366F1"))
@@ -633,7 +1120,10 @@ def _inline_pdf(text: str) -> str:
     fonts = pdf_fonts()
     out: list[str] = []
     for content, styles, href in _inline_spans(text):
-        seg = escape(pdf_safe(content))
+        if "br" in styles:
+            out.append("<br/>")
+            continue
+        seg = pdf_markup(content)
         if "code" in styles:
             seg = f'<font face="{fonts["mono"]}" color="#B91C1C">{seg}</font>'
         if "bold" in styles:
@@ -783,6 +1273,10 @@ def _code_markup(lines: Iterable[list[tuple[str, str | None]]]) -> str:
 # Diagrams and images
 # ---------------------------------------------------------------------------
 
+# The height reportlab's _listWrapOn (used by KeepTogether) passes when it measures.
+_MEASURE_HEIGHT = 0xFFFFFFF
+_MIN_LABEL_PT = 5.0
+
 
 def _diagram_card(data: bytes, max_width: float, max_height: float, natural_pt: float = 0.0):
     """A bordered image card that shrinks to fit the space left on the page.
@@ -807,6 +1301,10 @@ def _diagram_card(data: bytes, max_width: float, max_height: float, natural_pt: 
     if height > max_height:
         height = max_height
         width = height * px_w / px_h
+    # Mermaid lays labels out at 16px. When the diagram's layout size is known, never shrink
+    # it so far that they print below ~5pt (a tall diagram squeezed into the bottom of a
+    # page); let it start the next page at a readable size instead.
+    legible_h = (natural_pt / 0.75) * (_MIN_LABEL_PT / 16.0) * px_h / px_w if natural_pt else 0.0
 
     class DiagramCard(Flowable):
         pad = 8.0
@@ -823,9 +1321,18 @@ def _diagram_card(data: bytes, max_width: float, max_height: float, natural_pt: 
 
         def wrap(self, avail_width: float, avail_height: float):  # noqa: D102
             w, h = width, height
-            room_h = avail_height - 2 * self.pad
-            if h > room_h >= self.min_fit:
-                w, h = w * room_h / h, room_h
+            # A small shrink never hurts; a larger one only while labels stay legible.
+            floor = min(h, max(self.min_fit, min(h * 0.85, legible_h) if legible_h else 0.0))
+            if avail_height >= _MEASURE_HEIGHT:
+                # A heading's keepWithNext groups it with this card in a KeepTogether, which
+                # measures at unlimited height. Report the smallest size this card would
+                # accept, or the group always jumps to a new page and strands the space
+                # left on this one; the real wrap call below then shrinks to fit.
+                w, h = w * floor / h, floor
+            else:
+                room_h = avail_height - 2 * self.pad
+                if h > room_h >= floor:
+                    w, h = w * room_h / h, room_h
             room_w = avail_width - 2 * self.pad
             if w > room_w:
                 w, h = room_w, h * room_w / w
@@ -1034,9 +1541,17 @@ def markdown_pdf_flowables(
     # A quote shifts its children right; nothing else about them changes, so the whole
     # renderer is re-entered with a larger indent rather than flattened into one string.
     quote_indent = 16.0
+    nested_bullet = "\u25e6" if _glyph_ok()("\u25e6") else "\u2013"
 
-    def render(blocks: Sequence[Block], indent: float = 0.0, quoted: bool = False) -> list:
-        avail = content_width - indent
+    def render(
+        blocks: Sequence[Block],
+        indent: float = 0.0,
+        quoted: bool = False,
+        inset: float = 0.0,
+        depth: int = 0,
+    ) -> list:
+        """``inset`` is width taken by enclosing list items; ``depth`` their nesting level."""
+        avail = content_width - indent - inset
         tag = f"{int(indent)}{'q' if quoted else ''}"
         b_style = ParagraphStyle(
             f"MdBody{tag}", parent=body_style, leftIndent=body_style.leftIndent + indent
@@ -1067,15 +1582,24 @@ def markdown_pdf_flowables(
             elif kind == "p":
                 flow.append(Paragraph(_inline_pdf(block[1]), b_style))
             elif kind in ("ul", "ol"):
-                items = [ListItem(Paragraph(_inline_pdf(it), i_style)) for it in block[1]]
                 ordered = kind == "ol"
+                list_indent = 18 + indent
+                items = []
+                for text, kids in zip(block[1], list_children(block), strict=False):
+                    parts = [Paragraph(_inline_pdf(text), i_style)]
+                    if kids:
+                        parts.extend(
+                            render(kids, 0.0, quoted, inset + list_indent, depth + 1)
+                        )
+                    items.append(ListItem(parts))
+                bullet = "\u2022" if depth == 0 else nested_bullet
                 flow.append(
                     ListFlowable(
                         items,
                         bulletType="1" if ordered else "bullet",
-                        start=(block[2] if len(block) > 2 else 1) if ordered else None,
+                        start=(block[2] if len(block) > 2 else 1) if ordered else bullet,
                         bulletFormat="%s." if ordered else None,
-                        leftIndent=18 + indent,
+                        leftIndent=list_indent,
                         bulletDedent=12,
                         bulletFontName=fonts["body"],
                         bulletFontSize=body_style.fontSize,
@@ -1117,7 +1641,7 @@ def markdown_pdf_flowables(
                     flow.append(card)
             elif kind == "quote":
                 flow.append(Spacer(1, 4))
-                flow.extend(render(block[1], indent + quote_indent, quoted=True))
+                flow.extend(render(block[1], indent + quote_indent, True, inset, depth))
                 flow.append(Spacer(1, 4))
             elif kind == "hr":
                 flow.append(

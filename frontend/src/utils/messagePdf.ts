@@ -1,4 +1,5 @@
 import { apiFetch, downloadMedia } from "../api/client";
+import { useEffect, useState } from "react";
 import { svgToPngDataUrl } from "../components/Mermaid";
 
 export interface ExportDiagram {
@@ -37,21 +38,81 @@ export async function collectDiagrams(
   return diagrams;
 }
 
+export type MessageExportFormat = "pdf" | "docx";
+
 /**
- * Export ONE assistant response as a US Letter PDF and download it.
+ * Export ONE assistant response as a US Letter PDF or a Word document and download it.
  *
  * `container` is the DOM node holding that message's rendered markdown; its diagrams are
- * captured so the PDF matches what the lane shows.
+ * captured so the document matches what the lane shows.
  */
-export async function downloadMessagePdf(
+export async function downloadMessage(
   sessionId: string,
   messageId: string,
   container: HTMLElement | null,
+  fmt: MessageExportFormat = "pdf",
+  includePrompt = true,
 ): Promise<void> {
   const diagrams = await collectDiagrams(container);
   const res = await apiFetch<{ url: string; download_name: string }>(
-    `/api/sessions/${sessionId}/messages/${messageId}/export`,
-    { method: "POST", body: JSON.stringify({ diagrams }) },
+    `/api/sessions/${sessionId}/messages/${messageId}/export?fmt=${fmt}`,
+    {
+      method: "POST",
+      body: JSON.stringify({ diagrams, include_prompt: includePrompt }),
+    },
   );
   await downloadMedia(res.url, res.download_name);
+}
+
+export function downloadMessagePdf(
+  sessionId: string,
+  messageId: string,
+  container: HTMLElement | null,
+  includePrompt = true,
+): Promise<void> {
+  return downloadMessage(sessionId, messageId, container, "pdf", includePrompt);
+}
+
+export function downloadMessageDocx(
+  sessionId: string,
+  messageId: string,
+  container: HTMLElement | null,
+  includePrompt = true,
+): Promise<void> {
+  return downloadMessage(sessionId, messageId, container, "docx", includePrompt);
+}
+
+const INCLUDE_PROMPT_KEY = "multichat.export.includePrompt";
+const INCLUDE_PROMPT_EVENT = "multichat:export-include-prompt";
+
+export function getExportIncludePrompt(): boolean {
+  try {
+    return localStorage.getItem(INCLUDE_PROMPT_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+export function setExportIncludePrompt(value: boolean): void {
+  try {
+    localStorage.setItem(INCLUDE_PROMPT_KEY, String(value));
+  } catch {
+    /* storage unavailable — the choice just won't persist */
+  }
+  window.dispatchEvent(new CustomEvent(INCLUDE_PROMPT_EVENT, { detail: value }));
+}
+
+/** Shared "include the request message" export preference, kept in sync across every response. */
+export function useExportIncludePrompt(): [boolean, (value: boolean) => void] {
+  const [value, setValue] = useState(getExportIncludePrompt);
+  useEffect(() => {
+    const sync = () => setValue(getExportIncludePrompt());
+    window.addEventListener(INCLUDE_PROMPT_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(INCLUDE_PROMPT_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+  return [value, setExportIncludePrompt];
 }

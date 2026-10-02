@@ -7,7 +7,12 @@ import { isLaneCollapsed, setLaneCollapsedState } from "../utils/laneCollapse";
 import { contentBadges } from "../utils/contentMeta";
 import type { QueuedMessage } from "./LaneComposer";
 import { MessageRenderer, StreamingMessage, CodeFoldContext } from "./MessageRenderer";
-import { downloadMessagePdf } from "../utils/messagePdf";
+import {
+  downloadMessageDocx,
+  downloadMessagePdf,
+  useExportIncludePrompt,
+  type MessageExportFormat,
+} from "../utils/messagePdf";
 import { ToolCallCard } from "./ToolCallCard";
 import {
   AuthenticatedDownloadLink,
@@ -113,10 +118,17 @@ export function RestoreIcon() {
   );
 }
 
-/** Download just this response as a US Letter PDF (diagrams, code and tables included). */
-export function DownloadPdfButton({ onDownload }: { onDownload: () => Promise<void> }) {
+/** Download just this response as a US Letter PDF or Word file (diagrams, code and tables included). */
+export function DownloadResponseButton({
+  onDownload,
+  format = "pdf",
+}: {
+  onDownload: () => Promise<void>;
+  format?: MessageExportFormat;
+}) {
   const [state, setState] = useState<"idle" | "busy" | "done" | "error">("idle");
   const [error, setError] = useState("");
+  const label = format === "docx" ? "Word" : "PDF";
   return (
     <button
       onClick={async () => {
@@ -136,8 +148,10 @@ export function DownloadPdfButton({ onDownload }: { onDownload: () => Promise<vo
       disabled={state === "busy"}
       title={
         state === "error"
-          ? `PDF export failed: ${error}`
-          : "Download this response as a PDF"
+          ? `${label} export failed: ${error}`
+          : format === "docx"
+            ? "Download this response as a Word document"
+            : "Download this response as a PDF"
       }
       className={`flex min-h-11 items-center gap-1 rounded px-1.5 py-1 text-[10px] font-medium transition hover:bg-gray-100 hover:text-gray-700 disabled:cursor-wait lg:min-h-0 dark:hover:bg-gray-800 dark:hover:text-gray-200 ${
         state === "error" ? "text-red-500" : ""
@@ -160,7 +174,7 @@ export function DownloadPdfButton({ onDownload }: { onDownload: () => Promise<vo
             ? "Saved"
             : state === "error"
               ? "Failed"
-              : "PDF"}
+              : label}
       </span>
     </button>
   );
@@ -173,14 +187,17 @@ function ResponseActions({
   regenerateDisabled,
   onPin,
   onDownloadPdf,
+  onDownloadDocx,
 }: {
   content: string;
   onRegenerate?: () => void;
   regenerateDisabled?: boolean;
   onPin?: () => void;
-  onDownloadPdf?: () => Promise<void>;
+  onDownloadPdf?: (includePrompt: boolean) => Promise<void>;
+  onDownloadDocx?: (includePrompt: boolean) => Promise<void>;
 }) {
   const [copied, setCopied] = useState(false);
+  const [includePrompt, setIncludePrompt] = useExportIncludePrompt();
   return (
     <div className="flex items-center gap-1 text-gray-400">
       <button
@@ -213,7 +230,26 @@ function ResponseActions({
           <RegenIcon />
         </button>
       )}
-      {onDownloadPdf && <DownloadPdfButton onDownload={onDownloadPdf} />}
+      {(onDownloadPdf || onDownloadDocx) && (
+        <label
+          title="Include the request message in the exported document"
+          className="flex min-h-11 cursor-pointer select-none items-center gap-1 rounded px-1.5 py-1 text-[10px] font-medium transition hover:bg-gray-100 hover:text-gray-700 lg:min-h-0 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+        >
+          <input
+            type="checkbox"
+            checked={includePrompt}
+            onChange={(e) => setIncludePrompt(e.target.checked)}
+            className="h-3 w-3 cursor-pointer accent-indigo-500"
+          />
+          <span>Prompt</span>
+        </label>
+      )}
+      {onDownloadPdf && (
+        <DownloadResponseButton onDownload={() => onDownloadPdf(includePrompt)} format="pdf" />
+      )}
+      {onDownloadDocx && (
+        <DownloadResponseButton onDownload={() => onDownloadDocx(includePrompt)} format="docx" />
+      )}
     </div>
   );
 }
@@ -1329,11 +1365,20 @@ export function LaneColumn({
                                 : undefined
                             }
                             onPin={onPinTurn ? () => onPinTurn(turn.id) : undefined}
-                            onDownloadPdf={() =>
+                            onDownloadPdf={(includePrompt) =>
                               downloadMessagePdf(
                                 lane.session_id,
                                 m.id,
                                 messageRefs.current[m.id] ?? null,
+                                includePrompt,
+                              )
+                            }
+                            onDownloadDocx={(includePrompt) =>
+                              downloadMessageDocx(
+                                lane.session_id,
+                                m.id,
+                                messageRefs.current[m.id] ?? null,
+                                includePrompt,
                               )
                             }
                             regenerateDisabled={

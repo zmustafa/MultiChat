@@ -22,7 +22,9 @@ function initMermaid(mermaid: typeof MermaidApi, dark: boolean) {
     suppressErrorRendering: true,
     // Render labels as native SVG <text> instead of HTML <foreignObject>. This keeps the
     // diagram fully rasterizable so "Copy image" (SVG → PNG on a canvas) works without the
-    // foreignObject canvas-tainting that would otherwise block clipboard export.
+    // foreignObject canvas-tainting that would otherwise block clipboard export. Mermaid 11
+    // reads the top-level flag; the per-diagram ones are kept for older releases.
+    htmlLabels: false,
     flowchart: { htmlLabels: false },
     class: { htmlLabels: false },
   });
@@ -209,9 +211,38 @@ function htmlLabelLines(root: Element): string[] {
   return lines.filter(Boolean);
 }
 
+/** A label's lines as the browser actually laid them out, soft wraps included, so the
+ *  flattened text keeps the shape that fits its box. A label with no layout (detached or
+ *  hidden) falls back to its explicit <br>/block breaks. */
+function renderedLabelLines(live: Element | undefined, clone: Element): string[] {
+  if (live) {
+    const lines: string[] = [];
+    let lineTop: number | null = null;
+    const range = document.createRange();
+    const walker = document.createTreeWalker(live, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const text = node.textContent || "";
+      for (const m of text.matchAll(/\S+/g)) {
+        range.setStart(node, m.index);
+        range.setEnd(node, m.index + m[0].length);
+        const rect = range.getClientRects()[0];
+        if (!rect || (!rect.width && !rect.height)) return htmlLabelLines(clone);
+        if (lineTop === null || Math.abs(rect.top - lineTop) > rect.height / 2) {
+          lines.push(m[0]);
+          lineTop = rect.top;
+        } else {
+          lines[lines.length - 1] += " " + m[0];
+        }
+      }
+    }
+    if (lines.length) return lines;
+  }
+  return htmlLabelLines(clone);
+}
+
 /** Replace <foreignObject> HTML labels with native SVG <text> so the SVG can be
  *  rasterized to a canvas without tainting it. Uses the live element to read the
- *  rendered text color/size for a faithful copy. */
+ *  rendered text color/size and line wrapping for a faithful copy. */
 function flattenForeignObjects(clone: SVGSVGElement, live: SVGSVGElement) {
   const cloneFos = Array.from(clone.querySelectorAll("foreignObject"));
   const liveFos = Array.from(live.querySelectorAll("foreignObject"));
@@ -222,7 +253,7 @@ function flattenForeignObjects(clone: SVGSVGElement, live: SVGSVGElement) {
     const y = parseFloat(fo.getAttribute("y") || "0");
     const liveSpan = liveFos[i]?.querySelector("span, div, p") as HTMLElement | null;
     const style = liveSpan ? getComputedStyle(liveSpan) : null;
-    const lines = htmlLabelLines(fo);
+    const lines = renderedLabelLines(liveFos[i], fo);
     const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
     text.setAttribute("x", String(x + w / 2));
     text.setAttribute("y", String(y + h / 2));
